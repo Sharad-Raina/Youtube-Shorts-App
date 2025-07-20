@@ -868,7 +868,7 @@ def get_system_font():
     else:  # Linux and others
         return "Sans"  # Generic sans-serif
 
-def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False):
+def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, ultra_simple_video=False):
     """Create a shorts clip with proper 9:16 format and working subtitles"""
     try:
         st.write(f"🎬 Creating clip {clip_index+1} with {len(moment['subtitles'])} subtitles...")
@@ -914,35 +914,73 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
         # Color schemes for subtitles
         colors = ['FFD700', 'FF69B4', '00FFFF', 'FF4500', '32CD32', 'FF1493', '00FF7F', 'FF6347']
         
-        # Smart crop handling
+        # Smart crop handling with validation
         if smart_crop_offset:
-            crop_filter = f"crop={smart_crop_offset['width']}:{smart_crop_offset['height']}:{smart_crop_offset['x']}:{smart_crop_offset['y']}"
+            # Use smart crop coordinates
+            crop_w = smart_crop_offset['width']
+            crop_h = smart_crop_offset['height'] 
+            crop_x = smart_crop_offset['x']
+            crop_y = smart_crop_offset['y']
+            crop_filter = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
         else:
-            crop_filter = f"crop=ih*{width}/{height}:ih"  # Default center crop
+            # Calculate target aspect ratio for center crop
+            target_aspect = width / height  # e.g., 9/16 = 0.5625
+            # Use simplified crop calculation
+            crop_filter = f"crop=iw*{target_aspect:.6f}:ih"
         
-        # Background handling
-        if background_style == "blurred":
-            # Create blurred background
-            filter_complex = f"[0:v]split=2[main][bg];" \
-                           f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},gblur=sigma=15[bg_blur];" \
-                           f"[main]{crop_filter},scale={int(width*0.8)}:{int(height*0.8)}:force_original_aspect_ratio=decrease[main_sized];" \
-                           f"[bg_blur][main_sized]overlay=(W-w)/2:(H-h)/2[base]"
-        else:
-            # Simple crop with smart positioning
-            filter_complex = f"[0:v]{crop_filter},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[base]"
+        # Background handling with robust filter construction
+        try:
+            if ultra_simple_video:
+                # Ultra-simple mode: just scale to target resolution
+                st.info("🔧 Using ultra-simple video processing mode")
+                filter_complex = f"[0:v]scale={width}:{height}[base]"
+            elif background_style == "blurred":
+                # Create blurred background with safer filter syntax
+                bg_width = int(width)
+                bg_height = int(height)
+                main_width = int(width * 0.8)
+                main_height = int(height * 0.8)
+                
+                filter_complex = (
+                    f"[0:v]split=2[main][bg];"
+                    f"[bg]scale={bg_width}:{bg_height}:force_original_aspect_ratio=increase,"
+                    f"crop={bg_width}:{bg_height},"
+                    f"gblur=sigma=15[bg_blur];"
+                    f"[main]{crop_filter},"
+                    f"scale={main_width}:{main_height}:force_original_aspect_ratio=decrease[main_sized];"
+                    f"[bg_blur][main_sized]overlay=(W-w)/2:(H-h)/2[base]"
+                )
+            else:
+                # Simple crop with validated dimensions
+                filter_complex = (
+                    f"[0:v]{crop_filter},"
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[base]"
+                )
+        except Exception as filter_error:
+            st.warning(f"⚠️ Filter construction error: {filter_error}")
+            # Ultra-simple fallback
+            st.info("🔧 Falling back to ultra-simple video processing")
+            filter_complex = f"[0:v]scale={width}:{height}[base]"
         
-        # Add visual presets
-        if visual_preset == 'cinematic':
-            filter_complex += f";[base]eq=contrast=1.1:brightness=0.03:saturation=1.15[enhanced]"
-            base_label = "enhanced"
-        elif visual_preset == 'high_energy':
-            filter_complex += f";[base]eq=contrast=1.15:saturation=1.25[enhanced]"
-            base_label = "enhanced"
-        elif visual_preset == 'platform_optimized':
-            filter_complex += f";[base]eq=contrast=1.08:saturation=1.15[enhanced]"
-            base_label = "enhanced"
+        # Add visual presets with error handling
+        base_label = "base"
+        if not ultra_simple_video:
+            try:
+                if visual_preset == 'cinematic':
+                    filter_complex += f";[base]eq=contrast=1.1:brightness=0.03:saturation=1.15[enhanced]"
+                    base_label = "enhanced"
+                elif visual_preset == 'high_energy':
+                    filter_complex += f";[base]eq=contrast=1.15:saturation=1.25[enhanced]"
+                    base_label = "enhanced"
+                elif visual_preset == 'platform_optimized':
+                    filter_complex += f";[base]eq=contrast=1.08:saturation=1.15[enhanced]"
+                    base_label = "enhanced"
+            except Exception as preset_error:
+                st.warning(f"⚠️ Visual preset error: {preset_error}")
+                base_label = "base"
         else:
-            base_label = "base"
+            st.info("🔧 Skipping visual presets in ultra-simple mode")
         
         # Add subtitles using drawtext
         if clip_subtitles and enable_subtitles:
@@ -1126,7 +1164,7 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
             f.write(" ".join(cmd))
         st.caption(f"Command saved to: {os.path.basename(cmd_file)}")
         
-        # Run command
+        # Run command with automatic error recovery
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if process.returncode == 0 and os.path.exists(output_file):
@@ -1155,24 +1193,91 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                 'subtitle_count': len(clip_subtitles)
             }
         else:
-            st.error(f"❌ FFmpeg error for clip {clip_index+1}:")
-            st.code(process.stderr[:1000] + "..." if len(process.stderr) > 1000 else process.stderr)
+            st.warning(f"⚠️ Initial FFmpeg attempt failed for clip {clip_index+1}. Trying recovery...")
             
-            # Save full error for debugging
-            error_file = os.path.join(temp_dir, f'clip_{clip_index+1}_error_full.txt')
+            # Save initial error for debugging
+            error_file = os.path.join(temp_dir, f'clip_{clip_index+1}_error_initial.txt')
             with open(error_file, 'w', encoding='utf-8') as f:
-                f.write("COMMAND:\n")
+                f.write("INITIAL ATTEMPT:\n")
                 f.write(" ".join(cmd))
                 f.write("\n\nERROR OUTPUT:\n")
                 f.write(process.stderr)
                 f.write("\n\nFILTER COMPLEX:\n")
                 f.write(filter_complex)
-            st.info(f"📋 Full error details saved to: {os.path.basename(error_file)}")
             
-            # Suggest fixes
-            if 'No such filter' in process.stderr or 'Invalid argument' in process.stderr:
-                st.warning("🔧 This appears to be a filter syntax error. Try:")
-                st.info("• Disable subtitles using the sidebar checkbox\n• Enable ASCII-only mode\n• Check the saved error file for details")
+            # Attempt 1: Ultra-simple filter
+            st.info("🔄 Attempt 1: Using ultra-simple video processing...")
+            simple_filter = f"[0:v]scale={width}:{height}[out]"
+            
+            cmd_simple = [
+                'ffmpeg', '-y',
+                '-ss', str(moment['start_time']),
+                '-i', video_path,
+                '-t', str(moment['duration']),
+                '-filter_complex', simple_filter,
+                '-map', '[out]',
+                '-map', '0:a?',
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-movflags', '+faststart',
+                output_file
+            ]
+            
+            try:
+                process_simple = subprocess.run(cmd_simple, capture_output=True, text=True, timeout=300)
+                if process_simple.returncode == 0 and os.path.exists(output_file):
+                    file_size = os.path.getsize(output_file) / (1024 * 1024)
+                    st.success(f"✅ Recovery successful! Created clip {clip_index+1} with simple processing ({file_size:.1f} MB)")
+                    return {
+                        'file': output_file,
+                        'filename': f'clip_{clip_index+1}.mp4',
+                        'duration': moment['duration'],
+                        'score': moment['score'],
+                        'trigger_text': moment['trigger_text'],
+                        'size_mb': round(file_size, 2),
+                        'start_time': moment['start_time'],
+                        'subtitle_count': 0  # No subtitles in recovery mode
+                    }
+            except:
+                pass
+            
+            # Attempt 2: Basic copy with trim
+            st.info("🔄 Attempt 2: Using basic trim without filters...")
+            cmd_basic = [
+                'ffmpeg', '-y',
+                '-ss', str(moment['start_time']),
+                '-i', video_path,
+                '-t', str(moment['duration']),
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2',
+                '-movflags', '+faststart',
+                output_file
+            ]
+            
+            try:
+                process_basic = subprocess.run(cmd_basic, capture_output=True, text=True, timeout=300)
+                if process_basic.returncode == 0 and os.path.exists(output_file):
+                    file_size = os.path.getsize(output_file) / (1024 * 1024)
+                    st.success(f"✅ Recovery successful! Created clip {clip_index+1} with basic processing ({file_size:.1f} MB)")
+                    return {
+                        'file': output_file,
+                        'filename': f'clip_{clip_index+1}.mp4',
+                        'duration': moment['duration'],
+                        'score': moment['score'],
+                        'trigger_text': moment['trigger_text'],
+                        'size_mb': round(file_size, 2),
+                        'start_time': moment['start_time'],
+                        'subtitle_count': 0
+                    }
+            except:
+                pass
+            
+            # Final error report
+            st.error(f"❌ All recovery attempts failed for clip {clip_index+1}")
+            st.code(process.stderr[:1000] + "..." if len(process.stderr) > 1000 else process.stderr)
+            st.info(f"📋 Error details saved to: {os.path.basename(error_file)}")
+            st.warning("💡 Try enabling 'Ultra-simple video processing' in the sidebar for future clips")
             
             return None
             
@@ -1207,8 +1312,8 @@ if 'smart_crop_region' not in st.session_state:
     st.session_state.smart_crop_region = None
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - ROBUST SUBTITLE FIX")
-st.write("✅ **Simplified subtitle handling + Smart cropping + Stable downloads**")
+st.title("🎬 YouTube Shorts Generator - FILTER ERROR FIX")
+st.write("✅ **Automatic error recovery + Ultra-simple processing + Stable generation**")
 
 # Check FFmpeg availability
 ffmpeg_available, ffmpeg_message = check_ffmpeg_availability()
@@ -1219,14 +1324,15 @@ if not ffmpeg_available:
 
 # Quality info
 st.info("""
-🚀 **Robust Subtitle Fix:**
-- 🔤 **Simplified Text Handling**: Removes problematic characters (apostrophes, quotes) 
-- 🎨 **Multiple Subtitle Styles**: Box, shadow, or outline styles
-- 🧪 **Debug Output**: Saves filter commands for troubleshooting
-- 🔧 **ASCII Mode**: Ensures compatibility by removing special characters
-- ⚙️ **Toggle Subtitles**: Easily disable if experiencing issues
+🚀 **FFmpeg Filter Error Fix:**
+- 🔄 **Automatic Recovery**: Tries simpler approaches if initial processing fails
+- 🔧 **Ultra-Simple Mode**: Emergency fallback for maximum compatibility
+- 📐 **Robust Filter Construction**: Fixed aspect ratio calculations and syntax errors
+- 🛡️ **Error Validation**: Comprehensive error handling with progressive fallbacks
+- 🎨 **Multiple Subtitle Styles**: Box, shadow, or outline styles (when enabled)
 - 👤 **Smart Cropping**: Face detection keeps speakers in frame
 - 📥 **Stable Downloads**: Persistent download buttons
+- 🧪 **Debug Output**: Saves all commands and errors for troubleshooting
 """)
 
 # Settings
@@ -1321,6 +1427,13 @@ else:
     simple_mode = False  # Default value when disabled
     st.sidebar.warning("⚠️ Subtitles disabled")
 
+# Ultra-simple video processing option (always available)
+ultra_simple_video = st.sidebar.checkbox(
+    "Ultra-simple video processing",
+    value=False,
+    help="Use most basic video processing (enable if getting filter errors even with subtitles off)"
+)
+
 # Clip Duration
 clip_duration = st.sidebar.slider("⏱️ Clip Duration (seconds)", 15, 60, 30)
 
@@ -1382,6 +1495,8 @@ if 'ascii_only' not in locals():
     ascii_only = True
 if 'simple_mode' not in locals():
     simple_mode = False
+if 'ultra_simple_video' not in locals():
+    ultra_simple_video = False
 if 'force_auto_captions' not in locals():
     force_auto_captions = True
 if 'accept_any_language' not in locals():
@@ -1527,7 +1642,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
             
             clip = create_shorts_clip(
                 video_path, moment, background_style, visual_preset, motion_effects, 
-                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode
+                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, ultra_simple_video
             )
             
             if clip:

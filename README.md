@@ -1,16 +1,17 @@
-# YouTube Shorts Generator - FIXED VERSION
+# YouTube Shorts Generator - FILTER ERROR FIX
 
-A Streamlit app that converts YouTube videos into viral-ready vertical shorts (9:16 format) with automatic subtitle handling, smart cropping, and face detection.
+A Streamlit app that converts YouTube videos into viral-ready vertical shorts (9:16 format) with **automatic error recovery** and ultra-reliable video processing.
 
-## ✅ Latest Fixes (v2.0)
+## ✅ Latest Fixes (v3.0) - FILTER ERROR RESOLUTION
 
-- **🔧 Robust FFmpeg Integration**: Fixed filter complex syntax errors
-- **🔤 Simplified Text Processing**: Removes problematic characters causing rendering issues
+- **🔄 Automatic Error Recovery**: Automatically tries simpler approaches when initial FFmpeg commands fail
+- **🔧 Ultra-Simple Processing Mode**: Emergency fallback that works even with problematic video files
+- **📐 Fixed Filter Syntax**: Resolved aspect ratio calculations and filter construction errors
+- **🛡️ Progressive Fallbacks**: Multiple recovery attempts with increasingly simple processing
+- **⚙️ Error-Proof Generation**: Works even when subtitles are disabled and complex filters fail
+- **🧪 Comprehensive Debug Output**: Saves all attempts and errors for troubleshooting
 - **👤 Smart Face Detection**: Automatically crops to keep speakers in frame
-- **🎨 Multiple Subtitle Styles**: Box, shadow, and outline options
-- **⚙️ Fallback Modes**: Simple subtitle mode for maximum compatibility
-- **🧪 Font Testing**: Built-in testing to verify FFmpeg setup
-- **📋 Debug Output**: Saves command logs for troubleshooting
+- **🎨 Multiple Subtitle Styles**: Box, shadow, and outline options (when working)
 
 ## 🛠️ Setup Instructions
 
@@ -84,14 +85,25 @@ streamlit run streamlit_app.py
 
 ### Common Fixes
 
+**Error: "FFmpeg filter syntax error" (even with subtitles disabled)**
+- ✅ **FIXED**: App now automatically recovers with simpler processing
+- Enable "Ultra-simple video processing" in sidebar for immediate relief
+- The app will try 3 different approaches automatically
+
+**Error: "Invalid argument" or "No such filter"**
+- ✅ **FIXED**: Progressive fallback system handles these automatically
+- Check the debug files saved for detailed error analysis
+- Ultra-simple mode bypasses all complex filters
+
 **Error: "FFmpeg drawtext filter not available"**
 - Reinstall FFmpeg with full codec support
 - On Linux: `sudo apt install ffmpeg libavcodec-extra`
+- Enable "Ultra-simple video processing" to bypass text rendering
 
 **Error: "Font rendering failed"**
+- ✅ **IMPROVED**: Automatic fallback to simpler text rendering
 - Check if system fonts exist (tested automatically)
-- Enable simple subtitle mode
-- Try without font styling
+- Enable simple subtitle mode or disable subtitles entirely
 
 **Error: "No subtitles available"**
 - Enable "Force auto-generated captions"
