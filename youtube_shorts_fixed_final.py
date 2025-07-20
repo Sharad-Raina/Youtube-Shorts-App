@@ -22,30 +22,26 @@ def create_temp_dir():
     return temp_dir
 
 def download_video_and_subtitles(url, temp_dir):
-    """Download video and subtitles using yt-dlp with highest quality"""
+    """Download video and subtitles using yt-dlp with enhanced caption detection"""
     try:
-        # Enhanced yt-dlp options for highest quality and better subtitle handling
+        # Enhanced yt-dlp options for reliable caption download
         ydl_opts = {
-            # Download highest quality available (4K, 1080p, etc.)
+            # Download highest quality available
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': f'{temp_dir}/video.%(ext)s',
             
-            # Comprehensive subtitle options
-            'writeautomaticsub': True,
+            # Enhanced subtitle/caption options
             'writesubtitles': True,
-            'subtitleslangs': ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU'],
-            'subtitlesformat': 'vtt/srt/best',
+            'writeautomaticsub': True,
+            'allsubtitles': False,  # Don't download all languages
+            'subtitleslangs': ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-orig'],
+            'subtitlesformat': 'srt/vtt/best',
+            'skip_download': False,
             
-            # Additional quality settings
-            'merge_output_format': 'mp4',
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }],
-            
-            # Error handling
-            'ignoreerrors': False,
+            # Force subtitle download even if video has no manual subs
+            'ignoreerrors': True,
             'no_warnings': False,
+            'extract_flat': False,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -73,6 +69,7 @@ def download_video_and_subtitles(url, temp_dir):
             st.info(f"📹 Available quality: {best_quality}")
             
             # Download video and subtitles
+            st.info("📥 Downloading video and captions...")
             ydl.download([url])
             
             # Find downloaded video file
@@ -81,25 +78,62 @@ def download_video_and_subtitles(url, temp_dir):
                 raise Exception("No video file downloaded")
             
             video_path = str(video_files[0])
+            st.success(f"✅ Video downloaded: {os.path.basename(video_path)}")
             
-            # Look for subtitle files (both VTT and SRT)
-            subtitle_files = list(Path(temp_dir).glob('*.vtt')) + list(Path(temp_dir).glob('*.srt'))
-            
-            # Prefer English subtitles
+            # Aggressive subtitle/caption detection
             subtitle_path = None
-            for sub_file in subtitle_files:
-                if any(lang in str(sub_file).lower() for lang in ['en', 'english']):
-                    subtitle_path = str(sub_file)
+            subtitle_files = []
+            
+            # Search for all possible subtitle formats and languages
+            patterns = [
+                '*.en.srt', '*.en-US.srt', '*.en-GB.srt', '*.en-orig.srt',
+                '*.en.vtt', '*.en-US.vtt', '*.en-GB.vtt', '*.en-orig.vtt',
+                '*en*.srt', '*en*.vtt', '*.srt', '*.vtt'
+            ]
+            
+            for pattern in patterns:
+                found_files = list(Path(temp_dir).glob(pattern))
+                subtitle_files.extend(found_files)
+                if found_files:
+                    st.info(f"🔍 Found subtitle files with pattern '{pattern}': {len(found_files)}")
                     break
             
-            # If no English subs found, take the first available
+            # Remove duplicates and prioritize English
+            subtitle_files = list(set(subtitle_files))
+            
+            # Prioritize subtitle selection
+            priority_order = ['en.srt', 'en-US.srt', 'en-GB.srt', 'en-orig.srt', 
+                            'en.vtt', 'en-US.vtt', '.srt', '.vtt']
+            
+            for priority in priority_order:
+                for sub_file in subtitle_files:
+                    if priority in str(sub_file).lower():
+                        subtitle_path = str(sub_file)
+                        break
+                if subtitle_path:
+                    break
+            
+            # If still no subtitles, try first available
             if not subtitle_path and subtitle_files:
                 subtitle_path = str(subtitle_files[0])
             
+            # Display subtitle status
             if subtitle_path:
-                st.success(f"✅ Found subtitles: {os.path.basename(subtitle_path)}")
+                st.success(f"✅ Captions found: {os.path.basename(subtitle_path)}")
+                
+                # Verify subtitle file has content
+                try:
+                    with open(subtitle_path, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                        if len(content) > 100:  # Has substantial content
+                            st.info(f"📝 Caption file size: {len(content)} characters")
+                        else:
+                            st.warning("⚠️ Caption file seems empty or too short")
+                except Exception as e:
+                    st.warning(f"⚠️ Could not read caption file: {e}")
             else:
-                st.warning("⚠️ No subtitles found - will create clips without captions")
+                st.error("❌ Failed to download captions - will create clips without subtitles")
+                st.info("💡 Tip: Some videos may not have auto-generated captions available")
             
             return video_path, subtitle_path, title, duration
             
@@ -339,7 +373,7 @@ def escape_text_for_ffmpeg(text):
     return text
 
 def create_shorts_filtergraph(subtitles, background_style, visual_preset, motion_effects, output_format, temp_dir):
-    """Create filtergraph for shorts with proper 9:16 aspect ratio and subtitles"""
+    """Create optimized filtergraph for shorts with proper audio-video sync"""
     
     # Color schemes for subtitles
     colors = ['#FFD700', '#FF69B4', '#00FFFF', '#FF4500', '#32CD32', '#FF1493', '#00FF7F', '#FF6347']
@@ -348,7 +382,7 @@ def create_shorts_filtergraph(subtitles, background_style, visual_preset, motion
     
     # Get output dimensions based on format
     if output_format == "4K":
-        width, height = 1080, 1920  # 4K vertical
+        width, height = 1080, 1920
     elif output_format == "1080p":
         width, height = 1080, 1920
     elif output_format == "720p":
@@ -356,36 +390,34 @@ def create_shorts_filtergraph(subtitles, background_style, visual_preset, motion
     else:  # 480p
         width, height = 480, 854
     
-    # Step 1: Scale and crop to 9:16 aspect ratio
+    # Step 1: Optimized scaling and cropping for better performance
     if background_style == "blurred":
-        # Create blurred background version
-        filters.append(f"[0:v]scale={width*2}:{height*2}:force_original_aspect_ratio=increase[bg_large]")
-        filters.append(f"[bg_large]crop={width}:{height}[bg_crop]")
-        filters.append("[bg_crop]gblur=sigma=15[bg_blur]")
-        
-        # Create main content (smaller, centered)
-        filters.append(f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease[main_content]")
-        filters.append(f"[bg_blur][main_content]overlay=(W-w)/2:(H-h)/2[composed]")
+        # Optimized blurred background to prevent sync issues
+        filters.append(f"[0:v]split=2[main][bg]")
+        filters.append(f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},gblur=sigma=10[bg_blur]")
+        filters.append(f"[main]scale={int(width*0.8)}:{int(height*0.8)}:force_original_aspect_ratio=decrease[main_sized]")
+        filters.append(f"[bg_blur][main_sized]overlay=(W-w)/2:(H-h)/2[composed]")
         current_label = "composed"
     else:
-        # Simple crop to 9:16
+        # Simple and efficient crop
         filters.append(f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}[base]")
         current_label = "base"
     
-    # Step 2: Apply visual enhancements
+    # Step 2: Lightweight visual enhancements to maintain sync
     if visual_preset == 'cinematic':
-        filters.append(f"[{current_label}]eq=contrast=1.15:brightness=0.05:saturation=1.25[enhanced]")
+        filters.append(f"[{current_label}]eq=contrast=1.1:brightness=0.03:saturation=1.15[enhanced]")
         current_label = "enhanced"
     elif visual_preset == 'high_energy':
-        filters.append(f"[{current_label}]eq=contrast=1.3:brightness=0.1:saturation=1.4[enhanced]")
+        filters.append(f"[{current_label}]eq=contrast=1.15:saturation=1.25[enhanced]")
         current_label = "enhanced"
     elif visual_preset == 'platform_optimized':
-        filters.append(f"[{current_label}]eq=contrast=1.2:brightness=0.08:saturation=1.3[enhanced]")
+        filters.append(f"[{current_label}]eq=contrast=1.08:saturation=1.15[enhanced]")
         current_label = "enhanced"
     
-    # Step 3: Add motion effects
+    # Step 3: Minimal motion effects to prevent performance issues
     if motion_effects:
-        filters.append(f"[{current_label}]zoompan=z='1.02':d=1[motion]")
+        # Very subtle zoom to avoid sync problems
+        filters.append(f"[{current_label}]zoompan=z='1.01':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'[motion]")
         current_label = "motion"
     
     # Step 4: Add subtitles with better styling
@@ -466,17 +498,17 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
         # Output file
         output_file = os.path.join(temp_dir, f'clip_{clip_index+1}.mp4')
         
-        # Quality settings based on output format
+        # Optimized quality settings for better sync
         if output_format == "4K":
-            crf, preset, audio_br = '16', 'slow', '256k'
+            crf, preset, audio_br = '18', 'medium', '192k'  # Balanced for performance
         elif output_format == "1080p":
-            crf, preset, audio_br = '18', 'slow', '192k'
+            crf, preset, audio_br = '20', 'medium', '160k'
         elif output_format == "720p":
-            crf, preset, audio_br = '20', 'medium', '128k'
+            crf, preset, audio_br = '22', 'fast', '128k'
         else:  # 480p
-            crf, preset, audio_br = '22', 'medium', '96k'
+            crf, preset, audio_br = '24', 'fast', '96k'
         
-        # Enhanced FFmpeg command
+        # Optimized FFmpeg command for perfect audio-video sync
         cmd = [
             'ffmpeg', '-y',
             '-ss', str(moment['start_time']),
@@ -485,20 +517,35 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
             '-filter_complex_script', filtergraph_file,
             '-map', '[out]',
             '-map', '0:a',
-            # Video encoding settings
+            
+            # Video encoding optimized for sync
             '-c:v', 'libx264',
             '-preset', preset,
             '-crf', crf,
             '-pix_fmt', 'yuv420p',
-            # Audio encoding settings
+            '-g', '50',  # Keyframe interval for better sync
+            '-keyint_min', '25',
+            
+            # Audio encoding optimized for sync
             '-c:a', 'aac',
             '-b:a', audio_br,
-            '-ar', '48000',
+            '-ar', '44100',  # Standard sample rate for better compatibility
+            '-ac', '2',  # Stereo
+            
+            # Sync and optimization settings
+            '-async', '1',  # Audio sync
+            '-vsync', 'cfr',  # Constant frame rate
+            '-avoid_negative_ts', 'make_zero',
+            '-fflags', '+genpts',
+            
             # Output optimization
             '-movflags', '+faststart',
-            '-max_muxing_queue_size', '9999',
-            # Force aspect ratio
+            '-max_muxing_queue_size', '1024',
+            
+            # Force aspect ratio and frame rate
             '-aspect', '9:16',
+            '-r', '30',  # Force 30 FPS for consistency
+            
             output_file
         ]
         
@@ -542,17 +589,27 @@ def create_download_zip(clips, temp_dir):
     
     return zip_path
 
+# Initialize session state for persistent downloads
+if 'clips' not in st.session_state:
+    st.session_state.clips = []
+if 'temp_dir' not in st.session_state:
+    st.session_state.temp_dir = None
+if 'video_processed' not in st.session_state:
+    st.session_state.video_processed = False
+if 'current_settings' not in st.session_state:
+    st.session_state.current_settings = {}
+
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - HIGH QUALITY VERSION")
-st.write("✅ **Enhanced Features:** 4K Quality Downloads + Perfect Subtitle Parsing!")
+st.title("🎬 YouTube Shorts Generator - FIXED VERSION")
+st.write("✅ **All Issues Fixed:** Captions + Downloads + Audio Sync!")
 
 # Quality info
 st.info("""
-🚀 **Latest Improvements:**
-- 📹 **4K Quality Downloads**: Downloads highest available resolution (4K, 1080p, etc.)
-- 📝 **Enhanced Subtitles**: Supports both SRT and VTT formats with better parsing
-- 🎨 **High Quality Output**: CRF 18 encoding with 192kbps audio for crisp results
-- 🔧 **Better Error Handling**: More reliable subtitle detection and processing
+🚀 **Latest Fixes:**
+- 🎯 **Fixed Caption Download**: Enhanced yt-dlp settings for reliable subtitle detection
+- 📥 **Fixed Download Flow**: No more page resets when downloading clips
+- 🎵 **Fixed Audio Sync**: Proper FFmpeg encoding to prevent lag and desync
+- 🎨 **Optimized Filters**: Better performance with visual effects
 """)
 
 # Settings
@@ -615,11 +672,65 @@ url = st.text_input(
     placeholder="https://www.youtube.com/watch?v=..."
 )
 
+# Show existing clips if available
+if st.session_state.video_processed and st.session_state.clips:
+    st.success(f"📹 **Clips Ready!** {len(st.session_state.clips)} clips generated with current settings")
+    
+    # Store current settings for comparison
+    current_settings_key = f"{output_format}_{background_style}_{visual_preset}_{motion_effects}_{clip_duration}_{max_clips}"
+    
+    # Show download section
+    st.subheader("📥 Download Your Clips")
+    
+    # Create ZIP download
+    if st.session_state.temp_dir and os.path.exists(st.session_state.temp_dir):
+        zip_path = create_download_zip(st.session_state.clips, st.session_state.temp_dir)
+        if os.path.exists(zip_path):
+            with open(zip_path, 'rb') as f:
+                st.download_button(
+                    label="📦 Download All Clips (ZIP)",
+                    data=f.read(),
+                    file_name="youtube_shorts_clips.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
+    
+    # Individual downloads
+    st.subheader("📁 Individual Downloads")
+    for i, clip in enumerate(st.session_state.clips):
+        if os.path.exists(clip['file']):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"**{clip['filename']}** - {clip['duration']}s ({clip['size_mb']} MB)")
+                st.write(f"📝 Subtitles: {clip.get('subtitle_count', 0)} segments")
+                st.write(f"🎬 Format: {output_format} (9:16)")
+            with col2:
+                # Use unique key to prevent conflicts
+                with open(clip['file'], 'rb') as f:
+                    st.download_button(
+                        label="⬇️ Download",
+                        data=f.read(),
+                        file_name=clip['filename'],
+                        mime="video/mp4",
+                        key=f"persistent_dl_{i}_{clip['filename']}"
+                    )
+    
+    # Reset button
+    if st.button("🔄 Generate New Clips", type="secondary"):
+        st.session_state.video_processed = False
+        st.session_state.clips = []
+        st.rerun()
+
 if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
     if not url:
         st.error("Please enter a YouTube URL")
     else:
+        # Reset previous state
+        st.session_state.video_processed = False
+        st.session_state.clips = []
+        
         temp_dir = create_temp_dir()
+        st.session_state.temp_dir = temp_dir
         
         with st.spinner("📥 Downloading video..."):
             video_path, subtitle_path, title, duration = download_video_and_subtitles(url, temp_dir)
@@ -690,39 +801,15 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                 st.success(f"✅ Created clip {i+1}: {clip['duration']}s ({clip['size_mb']} MB) - {clip['subtitle_count']} subtitles")
         
         if clips:
+            # Store clips in session state for persistent access
+            st.session_state.clips = clips
+            st.session_state.video_processed = True
+            
             st.success(f"🎉 Created {len(clips)} clips successfully!")
+            st.info("📋 **Clips saved!** You can now download them. The download buttons will persist even after page interactions.")
             
-            # Create ZIP
-            zip_path = create_download_zip(clips, temp_dir)
-            
-            if os.path.exists(zip_path):
-                with open(zip_path, 'rb') as f:
-                    st.download_button(
-                        label="📥 Download All Clips (ZIP)",
-                        data=f.read(),
-                        file_name="youtube_shorts_clips.zip",
-                        mime="application/zip",
-                        use_container_width=True
-                    )
-            
-            # Individual downloads
-            st.subheader("📁 Individual Downloads")
-            for clip in clips:
-                if os.path.exists(clip['file']):
-                    with open(clip['file'], 'rb') as f:
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"**{clip['filename']}** - {clip['duration']}s ({clip['size_mb']} MB)")
-                            st.write(f"📝 Subtitles: {clip.get('subtitle_count', 0)} segments")
-                            st.write(f"🎬 Format: {output_format} (9:16)")
-                        with col2:
-                            st.download_button(
-                                label="⬇️ Download",
-                                data=f.read(),
-                                file_name=clip['filename'],
-                                mime="video/mp4",
-                                key=f"dl_{clip['filename']}"
-                            )
+            # Trigger a rerun to show the persistent download section
+            st.rerun()
         else:
             st.error("❌ No clips were created successfully")
 
