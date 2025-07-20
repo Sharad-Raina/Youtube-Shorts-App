@@ -142,12 +142,19 @@ def download_video_and_subtitles(url, temp_dir, force_auto_captions=True, accept
             # Download the video
             ydl.download([url])
         
-        # Find downloaded video file
-        video_files = list(Path(temp_dir).glob('video.*'))
+        # Find downloaded video file (exclude subtitle files)
+        video_files = []
+        for ext in ['.mp4', '.mkv', '.webm', '.avi', '.mov']:
+            video_files.extend(list(Path(temp_dir).glob(f'video*{ext}')))
+        
         if not video_files:
             raise Exception("No video file downloaded")
         
         video_path = str(video_files[0])
+        
+        # Validate that we got a video file, not a subtitle file
+        if video_path.endswith(('.srt', '.vtt', '.ass', '.ssa')):
+            raise Exception(f"Error: Got subtitle file instead of video file: {video_path}")
         st.success(f"✅ Video downloaded: {os.path.basename(video_path)}")
         
         # Find subtitle file
@@ -883,30 +890,33 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
         else:  # 480p
             width, height = 480, 854
         
-        # Convert subtitles to relative timing
+        # Convert subtitles to relative timing ONLY if subtitles are enabled
         clip_subtitles = []
-        clip_start_time = moment['start_time']
-        
-        for subtitle in moment['subtitles']:
-            relative_start = max(0, subtitle['start'] - clip_start_time)
-            relative_end = subtitle['end'] - clip_start_time
+        if enable_subtitles:
+            clip_start_time = moment['start_time']
             
-            if relative_start < moment['duration'] and relative_end > 0:
-                clip_subtitles.append({
-                    'start': relative_start,
-                    'end': min(relative_end, moment['duration']),
-                    'text': subtitle['text']
-                })
-        
-        st.write(f"📝 Processing {len(clip_subtitles)} subtitles for this clip...")
-        
-        # Debug: Save subtitles to file for verification
-        if clip_subtitles:
-            debug_file = os.path.join(temp_dir, f'clip_{clip_index+1}_subtitles.txt')
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                for sub in clip_subtitles:
-                    f.write(f"{sub['start']:.2f} - {sub['end']:.2f}: {sub['text']}\n")
-            st.info(f"💾 Subtitle debug file saved: {os.path.basename(debug_file)}")
+            for subtitle in moment['subtitles']:
+                relative_start = max(0, subtitle['start'] - clip_start_time)
+                relative_end = subtitle['end'] - clip_start_time
+                
+                if relative_start < moment['duration'] and relative_end > 0:
+                    clip_subtitles.append({
+                        'start': relative_start,
+                        'end': min(relative_end, moment['duration']),
+                        'text': subtitle['text']
+                    })
+            
+            st.write(f"📝 Processing {len(clip_subtitles)} subtitles for this clip...")
+            
+            # Debug: Save subtitles to file for verification
+            if clip_subtitles:
+                debug_file = os.path.join(temp_dir, f'clip_{clip_index+1}_subtitles.txt')
+                with open(debug_file, 'w', encoding='utf-8') as f:
+                    for sub in clip_subtitles:
+                        f.write(f"{sub['start']:.2f} - {sub['end']:.2f}: {sub['text']}\n")
+                st.info(f"💾 Subtitle debug file saved: {os.path.basename(debug_file)}")
+        else:
+            st.info("ℹ️ Subtitles disabled for this clip")
         
         # Build filter complex string directly
         filters = []
