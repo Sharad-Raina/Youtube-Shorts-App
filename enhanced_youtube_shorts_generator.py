@@ -9,6 +9,9 @@ import json
 import re
 import random
 from collections import defaultdict
+import yt_dlp
+import tempfile
+from pathlib import Path
 
 st.set_page_config(page_title="YouTube Shorts Generator", page_icon="🎬", layout="wide")
 
@@ -62,730 +65,574 @@ VIRAL_HOOKS = {
     "emotion": ["This made me cry...", "I'm still shocked...", "Mind = Blown"]
 }
 
-def parse_srt_simple(srt_path):
+def create_temp_dir():
+    """Create a temporary directory for processing"""
+    temp_dir = f"shorts_{hash(os.urandom(8)) % 1000000000}"
+    os.makedirs(temp_dir, exist_ok=True)
+    return temp_dir
+
+def download_video_and_subtitles(url, temp_dir):
+    """Download video and subtitles using yt-dlp"""
     try:
-        with open(srt_path, 'r', encoding='utf-8', errors='ignore') as f:
+        # Configure yt-dlp options
+        ydl_opts = {
+            'format': 'best[height<=1080]/best',
+            'outtmpl': f'{temp_dir}/video.%(ext)s',
+            'writeautomaticsub': True,
+            'writesubtitles': True,
+            'subtitleslangs': ['en', 'en-US', 'en-GB'],
+            'subtitlesformat': 'vtt',
+            'ignoreerrors': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Get video info
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Unknown')
+            duration = info.get('duration', 0)
+            
+            # Download video and subtitles
+            ydl.download([url])
+            
+            # Find downloaded video file
+            video_files = list(Path(temp_dir).glob('video.*'))
+            if not video_files:
+                raise Exception("No video file downloaded")
+            
+            video_path = str(video_files[0])
+            
+            # Find subtitle file
+            subtitle_files = list(Path(temp_dir).glob('*.vtt'))
+            subtitle_path = str(subtitle_files[0]) if subtitle_files else None
+            
+            return video_path, subtitle_path, title, duration
+            
+    except Exception as e:
+        st.error(f"Error downloading video: {str(e)}")
+        return None, None, None, None
+
+def parse_vtt_subtitles(subtitle_path):
+    """Parse VTT subtitle file"""
+    subtitles = []
+    if not subtitle_path or not os.path.exists(subtitle_path):
+        return subtitles
+    
+    try:
+        with open(subtitle_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        content = content.replace('\ufeff', '')
-        subtitles = []
-        blocks = content.strip().split('\n\n')
+        # Split by empty lines to get individual subtitle blocks
+        blocks = re.split(r'\n\s*\n', content)
         
         for block in blocks:
             lines = block.strip().split('\n')
-            if len(lines) >= 3:
-                # Find the line with timestamp
-                timestamp_line = None
-                for i, line in enumerate(lines):
-                    if ' --> ' in line:
-                        timestamp_line = i
-                        break
-                
-                if timestamp_line is not None:
-                    times = lines[timestamp_line].split(' --> ')
-                    if len(times) == 2:
-                        # Get all text after timestamp
-                        text_lines = lines[timestamp_line + 1:]
-                        text = ' '.join([line.strip() for line in text_lines if line.strip()])
+            if len(lines) >= 2:
+                # Look for timestamp line
+                for line in lines:
+                    if '-->' in line:
+                        timestamp_line = line
+                        # Find text lines (everything after timestamp)
+                        text_start_idx = lines.index(timestamp_line) + 1
+                        text_lines = lines[text_start_idx:]
                         
-                        if text:
-                            subtitles.append({
-                                'start': times[0].strip(),
-                                'end': times[1].strip(),
-                                'text': text
-                            })
+                        # Parse timestamps
+                        timestamps = timestamp_line.split(' --> ')
+                        if len(timestamps) == 2:
+                            start_time = parse_timestamp(timestamps[0])
+                            end_time = parse_timestamp(timestamps[1])
+                            
+                            # Join text lines and clean
+                            text = ' '.join(text_lines)
+                            text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
+                            text = text.strip()
+                            
+                            if text and start_time is not None and end_time is not None:
+                                subtitles.append({
+                                    'start': start_time,
+                                    'end': end_time,
+                                    'text': text
+                                })
+                        break
         
-        return subtitles
+        return sorted(subtitles, key=lambda x: x['start'])
+        
     except Exception as e:
         st.warning(f"Error parsing subtitles: {str(e)}")
         return []
 
-def srt_time_to_seconds(time_str):
+def parse_timestamp(timestamp_str):
+    """Parse VTT timestamp to seconds"""
     try:
-        # Handle both , and . as decimal separator
-        time_str = time_str.replace(',', '.')
+        # Remove any additional formatting
+        timestamp_str = timestamp_str.strip().split()[0]
         
-        # Split time components
-        if ':' in time_str:
-            parts = time_str.split(':')
-            if len(parts) == 3:
-                hours = float(parts[0])
-                minutes = float(parts[1])
-                seconds = float(parts[2])
-                return hours * 3600 + minutes * 60 + seconds
-            elif len(parts) == 2:
-                minutes = float(parts[0])
-                seconds = float(parts[1])
-                return minutes * 60 + seconds
+        # Handle different timestamp formats
+        if '.' in timestamp_str:
+            time_part, ms_part = timestamp_str.split('.')
+            ms = float('0.' + ms_part.replace(',', ''))
         else:
-            return float(time_str)
+            time_part = timestamp_str
+            ms = 0
+        
+        # Parse time components
+        time_components = time_part.split(':')
+        
+        if len(time_components) == 3:
+            hours, minutes, seconds = map(int, time_components)
+            total_seconds = hours * 3600 + minutes * 60 + seconds + ms
+        elif len(time_components) == 2:
+            minutes, seconds = map(int, time_components)
+            total_seconds = minutes * 60 + seconds + ms
+        else:
+            return None
+            
+        return total_seconds
     except:
-        return 0
+        return None
 
-def analyze_first_3_seconds(subtitles, start_time):
-    hook_score = 0
-    hook_text = ""
+def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
+    """Find potential viral moments in subtitles"""
+    viral_patterns = [
+        r'\b(amazing|incredible|unbelievable|shocking|mind-blowing|crazy|insane|wow)\b',
+        r'\b(secret|hidden|nobody knows|revealed|exposed)\b',
+        r'\b(how to|tutorial|learn|master|guide)\b',
+        r'\b(mistake|wrong|error|fail|disaster)\b',
+        r'\b(money|rich|wealthy|expensive|cheap|free)\b',
+        r'\b(love|hate|angry|emotional|feeling)\b',
+        r'\b(new|latest|breaking|update|news)\b',
+        r'\b(before|after|transformation|change)\b',
+        r'\b(reason|why|because|explanation)\b',
+        r'\b(never|always|forever|every|all)\b'
+    ]
     
-    hook_patterns = {
-        r'\?': 5, r'you': 4, r'(wait|stop|look|watch)': 6,
-        r'(never|always|every|must)': 4, r'\d+': 5,
-        r'(secret|truth|revealed)': 5, r'!': 3, r'(this|here)': 3,
+    moments = []
+    
+    for i, subtitle in enumerate(subtitles):
+        score = 0
+        text = subtitle['text'].lower()
+        
+        # Check for viral patterns
+        for pattern in viral_patterns:
+            matches = len(re.findall(pattern, text, re.IGNORECASE))
+            score += matches * 2
+        
+        # Check for questions and exclamations
+        score += text.count('?') * 3
+        score += text.count('!') * 2
+        
+        # Check for capital words (emphasis)
+        capital_words = len(re.findall(r'\b[A-Z]{2,}\b', subtitle['text']))
+        score += capital_words * 1
+        
+        if score > 0:
+            # Try to create clips of different durations around this moment
+            for duration in [15, 30, 45, 60]:
+                if duration < min_clip_duration or duration > max_clip_duration:
+                    continue
+                
+                start_time = max(0, subtitle['start'] - duration/3)
+                end_time = start_time + duration
+                
+                # Get subtitles for this time range
+                clip_subtitles = [
+                    s for s in subtitles 
+                    if s['start'] >= start_time and s['end'] <= end_time
+                ]
+                
+                if clip_subtitles:
+                    moments.append({
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'duration': duration,
+                        'score': score,
+                        'trigger_text': subtitle['text'],
+                        'subtitles': clip_subtitles
+                    })
+    
+    # Sort by score and remove duplicates
+    moments = sorted(moments, key=lambda x: x['score'], reverse=True)
+    
+    # Remove overlapping moments (keep highest scoring)
+    filtered_moments = []
+    for moment in moments:
+        overlap = False
+        for existing in filtered_moments:
+            if (moment['start_time'] < existing['end_time'] and 
+                moment['end_time'] > existing['start_time']):
+                overlap = True
+                break
+        if not overlap:
+            filtered_moments.append(moment)
+    
+    return filtered_moments[:10]  # Return top 10 moments
+
+def escape_text_for_ffmpeg(text):
+    """Properly escape text for FFmpeg drawtext filter"""
+    # Replace problematic characters
+    text = text.replace("'", "\\'")
+    text = text.replace(":", "\\:")
+    text = text.replace("[", "\\[")
+    text = text.replace("]", "\\]")
+    text = text.replace(",", "\\,")
+    text = text.replace(";", "\\;")
+    text = text.replace("\\", "\\\\")
+    text = text.replace("%", "\\%")
+    text = text.replace("=", "\\=")
+    return text
+
+def create_filtergraph_file(video_path, subtitles, background_style, visual_preset, motion_effects, temp_dir):
+    """Create a filtergraph file to avoid command line length limits"""
+    
+    # Color schemes for different presets
+    color_schemes = {
+        'platform_optimized': ['#FFD700', '#FF69B4', '#00FFFF', '#FF4500', '#32CD32'],
+        'cinematic': ['#F4D03F', '#E8DAEF', '#AED6F1', '#FADBD8', '#D5F4E6'],
+        'high_energy': ['#FF0080', '#00FF80', '#8000FF', '#FF8000', '#0080FF'],
+        'minimal': ['#FFFFFF', '#F0F0F0', '#E0E0E0', '#D0D0D0', '#C0C0C0']
     }
     
-    for sub in subtitles:
-        sub_start = srt_time_to_seconds(sub['start'])
-        if start_time <= sub_start < start_time + 3:
-            text_lower = sub['text'].lower()
-            hook_text += sub['text'] + " "
-            
-            for pattern, score in hook_patterns.items():
-                if re.search(pattern, text_lower):
-                    hook_score += score
+    colors = color_schemes.get(visual_preset, color_schemes['platform_optimized'])
     
-    return hook_score, hook_text.strip()
-
-def create_drawtext_captions(subtitles, start_time, clip_duration, video_width, video_height, color_scheme="Viral", caption_position="Bottom"):
-    colors = CAPTION_COLORS.get(color_scheme, CAPTION_COLORS["Viral"])
+    # Create filtergraph
+    filtergraph = []
     
-    # Default to bottom position
-    if caption_position == "Bottom":
-        y_pos = int(video_height * 0.85)  # 85% down for bottom
-    elif caption_position == "Top":
-        y_pos = int(video_height * 0.15)  # 15% down for top
-    else:  # Center
-        y_pos = int(video_height * 0.5)  # 50% for center
+    # Input and scaling
+    filtergraph.append("[0:v]scale=1080:1920:force_original_aspect_ratio=increase[scaled]")
     
-    drawtext_filters = []
+    # Background creation based on style
+    if background_style == "blurred":
+        filtergraph.append("[scaled]split=2[main][bg]")
+        filtergraph.append("[bg]scale=1080:1920:force_original_aspect_ratio=increase,gblur=sigma=20[blurred_bg]")
+        filtergraph.append("[blurred_bg][main]overlay=(W-w)/2:(H-h)/2[composed]")
+    elif background_style == "gradient":
+        filtergraph.append("[scaled]split=2[main][bg]")
+        filtergraph.append("color=c=#1a1a2e:size=1080x1920:duration=1[gradient_bg]")
+        filtergraph.append("[gradient_bg][main]overlay=(W-w)/2:(H-h)/2[composed]")
+    else:  # original_crop
+        filtergraph.append("[scaled]crop=1080:1920:(iw-1080)/2:(ih-1920)/2[composed]")
     
-    # Enhanced rainbow colors with more vibrant options
-    rainbow_colors = ["#FFD700", "#FF69B4", "#00FFFF", "#00FF00", "#FF4500", "#FF1493", "#FFFF00", "#FF6347", "#FF00FF", "#00FF7F"]
-    color_index = 0
+    # Apply visual enhancements based on preset
+    if visual_preset == 'cinematic':
+        filtergraph.append("[composed]eq=contrast=1.15:brightness=0.05:saturation=1.25:gamma=0.95[enhanced]")
+        filtergraph.append("[enhanced]curves=red='0/0 0.5/0.58 1/1':green='0/0 0.5/0.52 1/1':blue='0/0 0.5/0.48 1/1'[graded]")
+    elif visual_preset == 'high_energy':
+        filtergraph.append("[composed]eq=contrast=1.3:brightness=0.1:saturation=1.4:gamma=0.9[enhanced]")
+        filtergraph.append("[enhanced]hue=s=1.2[graded]")
+    elif visual_preset == 'platform_optimized':
+        filtergraph.append("[composed]eq=contrast=1.2:brightness=0.08:saturation=1.3:gamma=0.92[graded]")
+    else:  # minimal
+        filtergraph.append("[composed]eq=contrast=1.05:brightness=0.02:saturation=1.1[graded]")
     
-    for sub in subtitles:
-        sub_start = srt_time_to_seconds(sub['start'])
-        sub_end = srt_time_to_seconds(sub['end'])
-        
-        # Calculate timing relative to clip
-        clip_sub_start = sub_start - start_time
-        clip_sub_end = sub_end - start_time
-        
-        # Skip if subtitle is outside this clip
-        if clip_sub_end < 0 or clip_sub_start > clip_duration:
-            continue
-        
-        # Adjust timing to clip boundaries
-        clip_sub_start = max(0, clip_sub_start)
-        clip_sub_end = min(clip_duration, clip_sub_end)
-        
-        # Skip if no duration
-        if clip_sub_start >= clip_sub_end:
-            continue
-        
-        # Split text into word groups (1-2 words max)
-        words = sub['text'].split()
-        word_groups = []
-        
-        i = 0
-        while i < len(words):
-            if i < len(words) - 1 and len(words[i]) + len(words[i+1]) <= 12:
-                word_groups.append(f"{words[i]} {words[i+1]}")
-                i += 2
-            else:
-                word_groups.append(words[i])
-                i += 1
-        
-        if word_groups:
-            # Calculate time per word group
-            duration = clip_sub_end - clip_sub_start
-            time_per_group = duration / len(word_groups)
-            
-            for j, word_group in enumerate(word_groups):
-                group_start = clip_sub_start + (j * time_per_group)
-                group_end = clip_sub_start + ((j + 1) * time_per_group)
-                
-                # Select color based on scheme
-                if color_scheme == "Rainbow":
-                    text_color = rainbow_colors[color_index % len(rainbow_colors)]
-                    color_index += 1
-                else:
-                    text_color = colors["primary"]
-                
-                # Prepare text
-                text_upper = word_group.upper()
-                # More thorough escaping for FFmpeg
-                text_escaped = text_upper.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:").replace("[", "\\[").replace("]", "\\]")
-                
-                fontsize = int(video_height * 0.08)  # 8% of height
-                
-                # Create enhanced drawtext with modern styling
-                shadow_offset = int(fontsize * 0.05)  # Dynamic shadow based on font size
-                drawtext = (
-                    f"drawtext="
-                    f"text='{text_escaped}':"
-                    f"fontsize={fontsize}:"
-                    f"fontcolor={text_color}:"
-                    f"bordercolor=black:borderw=6:"  # Thicker border for better contrast
-                    f"shadowcolor=black@0.8:shadowx={shadow_offset}:shadowy={shadow_offset}:"  # Drop shadow
-                    f"box=1:boxcolor=black@0.6:boxborderw=15:"  # More prominent background box
-                    f"x=(w-text_w)/2:"
-                    f"y={y_pos}-text_h/2:"
-                    f"enable='between(t,{group_start:.3f},{group_end:.3f})'"
-                )
-                
-                drawtext_filters.append(drawtext)
-    
-    return drawtext_filters
-
-def find_viral_moments_ultra(subtitles, duration, num_clips):
-    viral_indicators = {
-        'hooks': {
-            'patterns': [r'\?', r'wait', r'stop', r'watch this', r'look at', r'check this',
-                        r'you won\'t believe', r'this is', r'here\'s', r'let me show'],
-            'weight': 6.0,
-            'first_3_sec_multiplier': 2.0
-        },
-        'emotions': {
-            'patterns': [r'!\s*!', r'wow', r'omg', r'crazy', r'insane', r'amazing',
-                        r'unbelievable', r'no way', r'what the', r'oh my god'],
-            'weight': 5.0,
-            'first_3_sec_multiplier': 1.5
-        },
-        'numbers': {
-            'patterns': [r'\$\d+', r'\d+\s*(million|billion|thousand)', r'\d+%',
-                        r'number \d+', r'top \d+', r'\d+ times', r'#\d+'],
-            'weight': 5.5,
-            'first_3_sec_multiplier': 1.8
-        },
-        'urgency': {
-            'patterns': [r'right now', r'today', r'quick', r'fast', r'immediately',
-                        r'before', r'last chance', r'limited'],
-            'weight': 4.5,
-            'first_3_sec_multiplier': 1.6
-        }
-    }
-    
-    moment_scores = defaultdict(float)
-    first_3_sec_scores = defaultdict(float)
-    
-    for sub_idx, sub in enumerate(subtitles):
-        start_sec = srt_time_to_seconds(sub['start'])
-        end_sec = srt_time_to_seconds(sub['end'])
-        text = sub['text']
-        text_lower = text.lower()
-        
-        pattern_score = 0
-        for indicator_type, indicator_data in viral_indicators.items():
-            for pattern in indicator_data['patterns']:
-                if re.search(pattern, text_lower):
-                    base_score = indicator_data['weight']
-                    
-                    if start_sec < 3:
-                        base_score *= indicator_data['first_3_sec_multiplier']
-                        first_3_sec_scores[int(start_sec)] += base_score
-                    
-                    pattern_score += base_score
-        
-        for sec in range(int(start_sec), int(end_sec) + 1):
-            moment_scores[sec] += pattern_score
-    
-    window_scores = []
-    window_size = 30
-    
-    for start in range(0, int(duration) - window_size + 1, 2):
-        window_score = sum(moment_scores.get(s, 0) for s in range(start, start + window_size))
-        
-        first_3_bonus = sum(first_3_sec_scores.get(s, 0) for s in range(start, min(start + 3, int(duration))))
-        window_score += first_3_bonus * 3
-        
-        window_scores.append((start, window_score))
-    
-    window_scores.sort(key=lambda x: x[1], reverse=True)
-    
-    selected_moments = []
-    used_ranges = []
-    
-    for start, score in window_scores:
-        overlaps = False
-        for used_start, used_end in used_ranges:
-            if not (start + window_size <= used_start or start >= used_end):
-                overlaps = True
-                break
-        
-        if not overlaps and score > 0:
-            selected_moments.append(start)
-            used_ranges.append((start, start + window_size))
-            
-            if len(selected_moments) >= num_clips:
-                break
-    
-    selected_moments.sort()
-    return selected_moments
-
-def create_modern_video_effects(width, height, platform="TikTok"):
-    """Create modern viral video effects based on platform"""
-    effects = []
-    
-    # Platform-specific effects
-    if platform == "TikTok":
-        # TikTok style: High contrast, vibrant colors, subtle zoom
-        effects.extend([
-            "eq=contrast=1.15:brightness=0.05:saturation=1.25:gamma=0.95",  # Enhanced colors
-            "curves=red='0/0 0.5/0.58 1/1':green='0/0 0.5/0.52 1/1':blue='0/0 0.5/0.48 1/1'"  # Color grading
-        ])
-    elif platform == "Instagram Reels":
-        # Instagram style: Aesthetic, film-like, warm tones
-        effects.extend([
-            "eq=contrast=1.08:brightness=0.03:saturation=1.15:gamma=0.98",
-            "colorbalance=rs=0.1:gs=-0.05:bs=-0.1:rm=0.05:gm=0:bm=-0.05",  # Warm color balance
-            "vignette=angle=PI/3:mode=forward"  # Subtle vignette
-        ])
-    else:  # YouTube Shorts
-        # YouTube style: Clean, professional, slight enhancement
-        effects.extend([
-            "eq=contrast=1.1:brightness=0.02:saturation=1.2",
-            "unsharp=5:5:0.8:3:3:0.4"  # Subtle sharpening
-        ])
-    
-    return effects
-
-def get_quality_settings(quality_choice, video_width, video_height):
-    if quality_choice == "Original (up to 4K)":
-        if video_height >= 2160:
-            return 3840, 2160, "veryslow", "18"
-        elif video_height >= 1440:
-            return 2560, 1440, "slow", "20"
-        elif video_height >= 1080:
-            return 1920, 1080, "medium", "22"
-        else:
-            return video_width, video_height, "medium", "23"
-    elif quality_choice == "1080p":
-        return 1920, 1080, "medium", "23"
-    elif quality_choice == "720p":
-        return 1280, 720, "medium", "23"
+    # Add motion effects if enabled
+    if motion_effects:
+        filtergraph.append("[graded]zoompan=z='if(lte(on,1),1.1,max(1.0,1.1-0.02*(on-1)))':d=25*2:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'[motion]")
+        base_video = "motion"
     else:
-        return 854, 480, "fast", "25"
+        base_video = "graded"
+    
+    # Add subtitle overlays
+    current_output = base_video
+    for i, subtitle in enumerate(subtitles):
+        color = colors[i % len(colors)]
+        escaped_text = escape_text_for_ffmpeg(subtitle['text'])
+        
+        # Simplified drawtext parameters to reduce length
+        drawtext_filter = (f"drawtext=text='{escaped_text}'"
+                          f":fontsize=80"
+                          f":fontcolor={color}"
+                          f":bordercolor=black:borderw=4"
+                          f":shadowcolor=black@0.7:shadowx=3:shadowy=3"
+                          f":box=1:boxcolor=black@0.5:boxborderw=10"
+                          f":x=(w-text_w)/2:y=h-200-text_h"
+                          f":enable='between(t,{subtitle['start']:.3f},{subtitle['end']:.3f})'")
+        
+        next_output = f"sub{i}"
+        filtergraph.append(f"[{current_output}]{drawtext_filter}[{next_output}]")
+        current_output = next_output
+    
+    # Final output
+    filtergraph.append(f"[{current_output}]format=yuv420p[out]")
+    
+    # Write filtergraph to file
+    filtergraph_file = os.path.join(temp_dir, "filtergraph.txt")
+    with open(filtergraph_file, 'w') as f:
+        f.write(';\n'.join(filtergraph))
+    
+    return filtergraph_file
 
-# Main UI
-st.markdown("### 🎯 Choose Your Platform")
-platform = st.selectbox(
-    "Select target platform for optimization:",
-    ["TikTok", "Instagram Reels", "YouTube Shorts"],
-    help="Each platform has unique viral patterns we'll optimize for"
+def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, temp_dir, clip_index):
+    """Create a single shorts clip using filtergraph file"""
+    try:
+        # Create filtergraph file
+        filtergraph_file = create_filtergraph_file(
+            video_path, moment['subtitles'], background_style, visual_preset, motion_effects, temp_dir
+        )
+        
+        # Output filename
+        output_file = os.path.join(temp_dir, f'clip_{clip_index+1}.mp4')
+        
+        # Build FFmpeg command using filtergraph file
+        cmd = [
+            'ffmpeg', '-y',
+            '-ss', str(moment['start_time']),
+            '-i', video_path,
+            '-t', str(moment['duration']),
+            '-filter_complex_script', filtergraph_file,
+            '-map', '[out]',
+            '-map', '0:a',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', '23',
+            '-movflags', '+faststart',
+            output_file
+        ]
+        
+        # Run FFmpeg command
+        process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        if process.returncode == 0 and os.path.exists(output_file):
+            file_size = os.path.getsize(output_file) / (1024 * 1024)  # Size in MB
+            return {
+                'file': output_file,
+                'filename': f'clip_{clip_index+1}.mp4',
+                'duration': moment['duration'],
+                'score': moment['score'],
+                'trigger_text': moment['trigger_text'],
+                'size_mb': round(file_size, 2),
+                'start_time': moment['start_time']
+            }
+        else:
+            st.error(f"FFmpeg error for clip {clip_index+1}: {process.stderr}")
+            return None
+            
+    except subprocess.TimeoutExpired:
+        st.error(f"Timeout creating clip {clip_index+1}")
+        return None
+    except Exception as e:
+        st.error(f"Error creating clip {clip_index+1}: {str(e)}")
+        return None
+
+def create_download_zip(clips, temp_dir):
+    """Create a ZIP file with all clips for download"""
+    zip_path = os.path.join(temp_dir, 'shorts_clips.zip')
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for clip in clips:
+            if clip and os.path.exists(clip['file']):
+                zipf.write(clip['file'], clip['filename'])
+    
+    return zip_path
+
+# Streamlit UI
+st.title("🎬 Enhanced YouTube Shorts Generator")
+st.write("Generate engaging, professionally styled YouTube Shorts with cinematic backgrounds and dynamic captions!")
+
+# Sidebar for settings
+st.sidebar.header("🎨 Visual Settings")
+
+background_style = st.sidebar.selectbox(
+    "Background Style",
+    ["blurred", "gradient", "original_crop"],
+    help="Choose how to handle the background for vertical format"
 )
 
-preset = PLATFORM_PRESETS[platform]
+visual_preset = st.sidebar.selectbox(
+    "Visual Preset",
+    ["platform_optimized", "cinematic", "high_energy", "minimal"],
+    help="Different color grading and styling presets"
+)
 
-youtube_url = st.text_input("Paste YouTube URL:", placeholder="https://www.youtube.com/watch?v=...")
+motion_effects = st.sidebar.checkbox(
+    "Enable Motion Effects",
+    value=True,
+    help="Add subtle zoom and motion effects"
+)
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    num_shorts = st.selectbox("Number of Shorts", [1, 2, 3, 5, 10], index=2)
-with col2:
-    video_quality = st.selectbox(
-        "Export Quality", 
-        ["Original (up to 4K)", "1080p", "720p", "480p"], 
-        index=1,
-        help="Original preserves source quality including 4K"
-    )
-with col3:
-    video_format = st.selectbox("Format", ["Vertical (9:16)", "Horizontal (16:9)"], index=0)
+clip_duration = st.sidebar.slider(
+    "Clip Duration (seconds)",
+    min_value=15,
+    max_value=60,
+    value=30,
+    help="Duration of each generated clip"
+)
 
-with st.expander("🎨 Advanced Viral Settings"):
-    col1, col2 = st.columns(2)
-    with col1:
-        preset["color_scheme"] = st.selectbox(
-            "Caption Color Scheme",
-            ["Rainbow", "Viral", "TikTok", "Energy"],
-            index=0 if platform == "TikTok" else 1,
-            help="Rainbow = multicolor captions"
-        )
-    with col2:
-        caption_position = st.selectbox(
-            "Caption Position",
-            ["Bottom", "Center", "Top"],
-            index=0,  # Default to Bottom
-            help="Bottom is recommended for better viewing"
-        )
-    
-    st.markdown("### 🎬 Visual Enhancement Options")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        background_style = st.selectbox(
-            "Background Style",
-            ["Blurred Background", "Original Crop", "Gradient Background"],
-            index=0,
-            help="Blurred background creates a cinematic look"
-        )
-    with col2:
-        visual_effects = st.selectbox(
-            "Visual Enhancement",
-            ["Platform Optimized", "Cinematic", "High Energy", "Minimal"],
-            index=0,
-            help="Platform Optimized applies best effects for chosen platform"
-        )
-    with col3:
-        motion_effects = st.checkbox(
-            "🌟 Motion Effects",
-            value=True,
-            help="Adds subtle zoom and movement for engagement"
-        )
-    
-    audio_enhance = st.checkbox(
-        "🎵 Audio Enhancement",
-        value=True,
-        help="Normalize volume and enhance speech clarity"
-    )
+max_clips = st.sidebar.slider(
+    "Maximum Clips",
+    min_value=1,
+    max_value=10,
+    value=5,
+    help="Maximum number of clips to generate"
+)
 
-if st.button("🚀 Generate Viral Shorts", type="primary", disabled=not youtube_url):
-    st.session_state.video_processed = False
-    st.session_state.output_files = []
-    st.session_state.zip_path = None
-    
-    work_dir = f"shorts_{int(time.time())}"
-    os.makedirs(work_dir, exist_ok=True)
-    
-    try:
-        with st.spinner("📥 Downloading video with captions..."):
-            video_file = os.path.join(work_dir, "video.mp4")
-            
-            dl_cmd = [
-                sys.executable, "-m", "yt_dlp",
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--write-auto-sub",
-                "--write-subs",
-                "--sub-langs", "en,en-US,en-GB",
-                "--convert-subs", "srt",
-                "-o", video_file,
-                youtube_url
-            ]
-            
-            result = subprocess.run(dl_cmd, capture_output=True, text=True)
-            
-            if not os.path.exists(video_file):
-                st.error("❌ Failed to download video")
-                st.stop()
-        
-        st.success("✅ Video downloaded!")
-        
-        srt_file = None
-        for file in os.listdir(work_dir):
-            if file.endswith('.srt'):
-                srt_file = os.path.join(work_dir, file)
-                break
-        
-        subtitles = []
-        if srt_file:
-            st.info(f"✅ Found subtitles: {os.path.basename(srt_file)}")
-            subtitles = parse_srt_simple(srt_file)
-            if subtitles:
-                st.success(f"✅ Parsed {len(subtitles)} subtitle entries")
-                # Debug: Show first few subtitles
-                with st.expander("Debug: First 5 subtitles"):
-                    for i, sub in enumerate(subtitles[:5]):
-                        st.text(f"{i+1}. {sub['start']} --> {sub['end']}: {sub['text']}")
-        else:
-            st.warning("⚠️ No subtitles found - creating without captions")
-        
-        probe_cmd = [
-            "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height:format=duration",
-            "-of", "json", video_file
-        ]
-        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        
-        try:
-            probe_data = json.loads(probe_result.stdout)
-            video_width = probe_data['streams'][0]['width']
-            video_height = probe_data['streams'][0]['height']
-            duration = float(probe_data['format']['duration'])
-            st.info(f"📊 Video: {video_width}x{video_height}, Duration: {duration:.1f}s")
-        except:
-            duration = 300
-            video_width = 1920
-            video_height = 1080
-        
-        if subtitles:
-            st.info("🤖 AI is analyzing for viral potential with first 3-second optimization...")
-            clip_starts = find_viral_moments_ultra(subtitles, duration, num_shorts)
-            st.success("✅ Found the most viral moments!")
-        else:
-            interval = duration / num_shorts
-            clip_starts = [int(i * interval) for i in range(num_shorts)]
-        
-        output_files = []
-        progress = st.progress(0)
-        
-        for i, start_time in enumerate(clip_starts):
-            progress.progress((i + 1) / len(clip_starts))
-            
-            clip_duration = min(30, duration - start_time)
-            if clip_duration < 5:
-                continue
-            
-            st.text(f"Creating viral short {i+1}/{num_shorts} (from {start_time:.1f}s)...")
-            
-            output_file = os.path.join(work_dir, f"short_{i+1:02d}.mp4")
-            
-            # Determine output dimensions
-            if "Vertical" in video_format:
-                if video_quality == "Original (up to 4K)":
-                    if video_height >= 2160:
-                        width, height = 1216, 2160
-                    elif video_height >= 1440:
-                        width, height = 810, 1440
-                    else:
-                        width, height = 608, 1080
-                elif video_quality == "1080p":
-                    width, height = 608, 1080
-                elif video_quality == "720p":
-                    width, height = 406, 720
-                else:
-                    width, height = 270, 480
-            else:
-                target_width, target_height, preset_speed, crf = get_quality_settings(video_quality, video_width, video_height)
-                width, height = target_width, target_height
-            
-            # Create modern video filter based on user preferences
-            vf_filter = ""
-            
-            if "Vertical" in video_format:
-                if background_style == "Blurred Background":
-                    # Create blurred background with main content centered
-                    vf_filter = (
-                        f"scale=1920:1080:force_original_aspect_ratio=decrease,"
-                        f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,"  # Ensure 16:9 first
-                        f"split[main][bg];"
-                        f"[bg]scale=1920*1.5:1080*1.5,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,gblur=sigma=30,eq=brightness=-0.4[blurred];"
-                        f"[main]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black[main_sized];"
-                        f"[blurred]scale={width}:{height},crop={width}:{height}[bg_final];"
-                        f"[bg_final][main_sized]overlay=(W-w)/2:(H-h)/2"
-                    )
-                elif background_style == "Gradient Background":
-                    # Animated gradient background
-                    vf_filter = (
-                        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black[main];"
-                        f"color=c=0x1a1a1a:size={width}x{height}[bg];"
-                        f"[bg]geq=r='128+64*sin(2*PI*T/8)':g='128+64*sin(2*PI*T/8+2*PI/3)':b='128+64*sin(2*PI*T/8+4*PI/3)'[gradient];"
-                        f"[gradient][main]overlay"
-                    )
-                else:  # Original Crop
-                    vf_filter = f"scale=-2:{height},crop={width}:{height}:(iw-ow)/2:0"
-            else:
-                vf_filter = f"scale={width}:{height}"
-            
-            # Add visual effects based on selection
-            if visual_effects == "Platform Optimized":
-                platform_effects = create_modern_video_effects(width, height, platform)
-                for effect in platform_effects:
-                    vf_filter += f",{effect}"
-            elif visual_effects == "Cinematic":
-                vf_filter += ",eq=contrast=1.12:brightness=0.02:saturation=1.05:gamma=0.95,vignette=angle=PI/4:mode=forward,colorbalance=rs=0.05:bs=-0.05"
-            elif visual_effects == "High Energy":
-                vf_filter += ",eq=contrast=1.2:brightness=0.05:saturation=1.3:gamma=0.92,vibrance=intensity=0.3"
-            # Minimal = no additional effects
-            
-            # Add motion effects if enabled
-            if motion_effects and background_style != "Gradient Background":
-                if "Vertical" in video_format and background_style == "Blurred Background":
-                    # Subtle zoom for main content area
-                    vf_filter = vf_filter.replace("[main_sized]", "[main_temp];[main_temp]zoompan=z='if(lte(zoom,1.0),1.03,max(1.0,zoom-0.001))':d=1[main_sized]")
-                else:
-                    vf_filter += ",zoompan=z='if(lte(zoom,1.0),1.04,max(1.0,zoom-0.0012))':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            
-            hook_score = 20
-            if subtitles:
-                hook_score, hook_text = analyze_first_3_seconds(subtitles, start_time)
-                st.text(f"  📊 Hook score: {hook_score}/30")
-                
-                if hook_score < 15:
-                    hook_category = random.choice(list(VIRAL_HOOKS.keys()))
-                    viral_hook = random.choice(VIRAL_HOOKS[hook_category])
-                    st.text(f"  🎯 Adding viral hook: '{viral_hook}'")
-            
-            # Add captions
-            if subtitles:
-                drawtext_filters = create_drawtext_captions(
-                    subtitles, 
-                    start_time, 
-                    clip_duration, 
-                    width,
-                    height,
-                    preset.get("color_scheme", "Viral"),
-                    caption_position
-                )
-                
-                if drawtext_filters:
-                    for drawtext in drawtext_filters:
-                        vf_filter = f"{vf_filter},{drawtext}"
-                    st.text(f"  ✅ Added {len(drawtext_filters)} colorful caption segments")
-            
-            if video_quality == "Original (up to 4K)":
-                preset_speed = "slow" if height >= 1440 else "medium"
-                crf = "18" if height >= 2160 else "20"
-            else:
-                preset_speed = "medium"
-                crf = "23"
-            
-            cmd = [
-                "ffmpeg", "-y",
-                "-ss", str(start_time),
-                "-i", video_file,
-                "-t", str(clip_duration),
-                "-vf", vf_filter,
-                "-c:v", "libx264",
-                "-preset", preset_speed,
-                "-crf", crf,
-                "-c:a", "aac",
-                "-b:a", "192k" if height >= 1080 else "128k",
-                "-movflags", "+faststart",
-            ]
-            
-            if audio_enhance:
-                cmd.extend(["-af", "loudnorm=I=-16:TP=-1.5:LRA=11,highpass=f=100,lowpass=f=15000"])
-            
-            cmd.append(output_file)
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if os.path.exists(output_file) and os.path.getsize(output_file) > 1000:
-                output_files.append(output_file)
-                st.success(f"✅ Created viral short {i+1}")
-            else:
-                st.error(f"❌ Failed to create short {i+1}")
-                if result.stderr:
-                    with st.expander(f"Error details for short {i+1}"):
-                        st.code(result.stderr)
-        
-        if output_files:
-            zip_file = os.path.join(work_dir, "viral_shorts.zip")
-            with zipfile.ZipFile(zip_file, 'w') as zf:
-                for f in output_files:
-                    zf.write(f, os.path.basename(f))
-            
-            st.session_state.video_processed = True
-            st.session_state.output_files = output_files
-            st.session_state.zip_path = zip_file
-            
-            st.balloons()
-            st.success(f"🎉 Created {len(output_files)} viral-optimized shorts!")
-        
-    except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
-        import traceback
-        with st.expander("Full error details"):
-            st.code(traceback.format_exc())
+# Main input
+url = st.text_input(
+    "Enter YouTube URL:",
+    placeholder="https://www.youtube.com/watch?v=...",
+    help="Paste any YouTube video URL here"
+)
 
-if st.session_state.video_processed and st.session_state.output_files:
-    st.markdown("---")
-    st.markdown("### 📥 Download Your Viral Shorts")
-    
-    st.success(f"""
-    🎉 **Your {platform}-optimized viral shorts are ready!**
-    
-    **🚀 Enhanced Visual Features:**
-    - ✅ **Cinematic blurred backgrounds**
-    - ✅ **Professional color grading**
-    - ✅ **Subtle motion & zoom effects**
-    - ✅ **Platform-optimized styling**
-    - ✅ **Enhanced vibrant captions**
-    - ✅ **Audio enhancement & normalization**
-    - ✅ **Quality preserved (up to {video_quality})**
-    - ✅ **First 3-second hook optimization**
-    
-    **💡 Pro tip**: These videos are now visually optimized for maximum engagement!
-    """)
-    
-    if st.session_state.zip_path and os.path.exists(st.session_state.zip_path):
-        with open(st.session_state.zip_path, 'rb') as f:
-            st.download_button(
-                label=f"⬇️ Download All {platform} Shorts (ZIP)",
-                data=f.read(),
-                file_name=f"{platform.lower()}_viral_shorts.zip",
-                mime="application/zip"
-            )
-    
-    st.markdown("**Or download individually:**")
-    cols = st.columns(5)
-    for idx, file_path in enumerate(st.session_state.output_files):
-        with cols[idx % 5]:
-            if os.path.exists(file_path):
-                with open(file_path, 'rb') as f:
-                    st.download_button(
-                        label=f"Short #{idx+1}",
-                        data=f.read(),
-                        file_name=f"{platform.lower()}_viral_{idx+1}.mp4",
-                        mime="video/mp4",
-                        key=f"dl_{idx}"
-                    )
-    
-    if st.button("🔄 Create More Viral Shorts"):
-        st.session_state.video_processed = False
-        st.session_state.output_files = []
-        st.session_state.zip_path = None
-        for d in os.listdir('.'):
-            if d.startswith('shorts_') and os.path.isdir(d):
-                shutil.rmtree(d, ignore_errors=True)
-        st.rerun()
-
-with st.sidebar:
-    st.markdown("### 🚀 Enhanced Features Active")
-    if 'background_style' in locals():
-        st.success(f"""
-        **Platform: {platform}**
-        - Visual Style: {visual_effects}
-        - Background: {background_style}
-        - Motion Effects: {'✅' if motion_effects else '❌'}
-        - Colors: {preset['color_scheme']}
-        
-        **v6.0 Visual Upgrades:**
-        ✅ **Cinematic backgrounds**
-        ✅ **Professional color grading**
-        ✅ **Motion & zoom effects**
-        ✅ **Platform optimization**
-        ✅ **Enhanced captions**
-        ✅ **Audio enhancement**
-        """)
+if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
+    if not url:
+        st.error("Please enter a YouTube URL")
     else:
-        st.success(f"""
-        **Platform: {platform}**
-        - Hook style: {preset['hook_style']}
-        - Colors: {preset['color_scheme']}
+        # Initialize session state
+        if 'clips' not in st.session_state:
+            st.session_state.clips = []
+        if 'temp_dir' not in st.session_state:
+            st.session_state.temp_dir = None
         
-        **v6.0 Visual Upgrades:**
-        ✅ **Cinematic backgrounds**
-        ✅ **Professional color grading**
-        ✅ **Motion & zoom effects**
-        ✅ **Platform optimization**
-        """)
+        # Create temporary directory
+        temp_dir = create_temp_dir()
+        st.session_state.temp_dir = temp_dir
+        
+        with st.spinner("📥 Downloading video and subtitles..."):
+            video_path, subtitle_path, title, duration = download_video_and_subtitles(url, temp_dir)
+        
+        if not video_path:
+            st.error("Failed to download video. Please check the URL and try again.")
+            st.stop()
+        
+        st.success(f"✅ Downloaded: {title}")
+        st.info(f"📹 Duration: {duration//60}:{duration%60:02d} minutes")
+        
+        with st.spinner("📝 Analyzing subtitles for viral moments..."):
+            subtitles = parse_vtt_subtitles(subtitle_path)
+        
+        if not subtitles:
+            st.warning("⚠️ No subtitles found. Clips will be generated without captions.")
+            # Create a simple moment for the first part of the video
+            moments = [{
+                'start_time': 0,
+                'end_time': min(clip_duration, duration),
+                'duration': min(clip_duration, duration),
+                'score': 1,
+                'trigger_text': 'No subtitles available',
+                'subtitles': []
+            }]
+        else:
+            st.success(f"📊 Found {len(subtitles)} subtitle segments")
+            moments = find_viral_moments(subtitles, clip_duration, clip_duration)
+        
+        if not moments:
+            st.warning("⚠️ No viral moments detected. Creating clips from the beginning.")
+            # Create moments manually
+            moments = []
+            for i in range(min(max_clips, duration // clip_duration)):
+                start = i * clip_duration
+                end = min(start + clip_duration, duration)
+                clip_subs = [s for s in subtitles if s['start'] >= start and s['end'] <= end]
+                moments.append({
+                    'start_time': start,
+                    'end_time': end,
+                    'duration': end - start,
+                    'score': 1,
+                    'trigger_text': f'Clip {i+1}',
+                    'subtitles': clip_subs
+                })
+        
+        st.info(f"🎯 Found {len(moments)} potential viral moments")
+        
+        # Limit to max_clips
+        moments = moments[:max_clips]
+        
+        # Progress tracking
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        clips_container = st.container()
+        
+        clips = []
+        
+        for i, moment in enumerate(moments):
+            status_text.text(f"🎬 Creating clip {i+1}/{len(moments)}...")
+            progress_bar.progress((i) / len(moments))
+            
+            clip = create_shorts_clip(
+                video_path, moment, background_style, visual_preset, motion_effects, temp_dir, i
+            )
+            
+            if clip:
+                clips.append(clip)
+                
+                # Display clip info
+                with clips_container.expander(f"📹 Clip {i+1} - {clip['duration']}s ({clip['size_mb']} MB)", expanded=False):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Score:** {clip['score']}")
+                        st.write(f"**Start Time:** {clip['start_time']:.1f}s")
+                    with col2:
+                        st.write(f"**Duration:** {clip['duration']}s")
+                        st.write(f"**Size:** {clip['size_mb']} MB")
+                    st.write(f"**Trigger:** {clip['trigger_text']}")
+        
+        progress_bar.progress(1.0)
+        status_text.text("✅ All clips created successfully!")
+        
+        st.session_state.clips = clips
+        
+        if clips:
+            st.success(f"🎉 Successfully created {len(clips)} shorts clips!")
+            
+            # Create download ZIP
+            with st.spinner("📦 Creating download package..."):
+                zip_path = create_download_zip(clips, temp_dir)
+            
+            # Download button
+            if os.path.exists(zip_path):
+                with open(zip_path, 'rb') as f:
+                    zip_data = f.read()
+                
+                st.download_button(
+                    label="📥 Download All Clips (ZIP)",
+                    data=zip_data,
+                    file_name="youtube_shorts_clips.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
+            
+            # Individual download buttons
+            st.subheader("📁 Individual Downloads")
+            for clip in clips:
+                if os.path.exists(clip['file']):
+                    with open(clip['file'], 'rb') as f:
+                        video_data = f.read()
+                    
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"**{clip['filename']}** - {clip['duration']}s ({clip['size_mb']} MB)")
+                    with col2:
+                        st.download_button(
+                            label="⬇️ Download",
+                            data=video_data,
+                            file_name=clip['filename'],
+                            mime="video/mp4",
+                            key=f"download_{clip['filename']}"
+                        )
+        else:
+            st.error("❌ No clips were created successfully. Please try again.")
+
+# Display tips
+with st.expander("💡 Tips for Best Results"):
+    st.write("""
+    **Visual Settings Guide:**
+    - **Blurred Background**: Creates cinematic depth with blurred original video as background
+    - **Gradient Background**: Modern, clean look with gradient overlay
+    - **Original Crop**: Simple center crop of original video
     
-    st.markdown("### 🎬 Visual Enhancements")
-    st.info("""
-    **New Visual System:**
-    - Blurred cinematic backgrounds
-    - Platform-specific color grading
-    - Subtle motion effects
-    - Professional styling
-    - Enhanced readability
+    **Visual Presets:**
+    - **Platform Optimized**: Balanced colors perfect for TikTok, Instagram, YouTube
+    - **Cinematic**: Film-like color grading with warm tones
+    - **High Energy**: Vibrant, saturated colors for exciting content
+    - **Minimal**: Clean, subtle enhancement for professional content
+    
+    **Best Practices:**
+    - Use videos with clear speech and engaging content
+    - 30-second clips work best for most platforms
+    - Enable motion effects for more dynamic videos
+    - Longer source videos provide more viral moment options
     """)
-    
-    st.markdown("### 🎯 Caption System")
-    st.info("""
-    **Enhanced Captions:**
-    - Vibrant hex colors
-    - Dynamic shadows
-    - Better contrast
-    - Perfect sync
-    - Modern styling
-    """)
-    
-    st.markdown("### 📈 Viral Tips")
-    st.warning("""
-    **Upload at peak times:**
-    - TikTok: 6-9 AM, 7-11 PM
-    - Instagram: 11 AM-1 PM, 7-9 PM
-    - YouTube: 2-4 PM, 9-11 PM
-    
-    **First 24 hours = crucial!**
-    """)
+
+# Footer
+st.markdown("---")
+st.markdown("🎬 **Enhanced YouTube Shorts Generator** - Transform long-form content into engaging shorts with professional styling!")
