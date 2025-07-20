@@ -22,32 +22,84 @@ def create_temp_dir():
     return temp_dir
 
 def download_video_and_subtitles(url, temp_dir):
-    """Download video and subtitles using yt-dlp"""
+    """Download video and subtitles using yt-dlp with highest quality"""
     try:
+        # Enhanced yt-dlp options for highest quality and better subtitle handling
         ydl_opts = {
-            'format': 'best[height<=1080]/best',
+            # Download highest quality available (4K, 1080p, etc.)
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': f'{temp_dir}/video.%(ext)s',
+            
+            # Comprehensive subtitle options
             'writeautomaticsub': True,
             'writesubtitles': True,
-            'subtitleslangs': ['en', 'en-US', 'en-GB'],
-            'subtitlesformat': 'vtt',
-            'ignoreerrors': True,
+            'subtitleslangs': ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU'],
+            'subtitlesformat': 'vtt/srt/best',
+            
+            # Additional quality settings
+            'merge_output_format': 'mp4',
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }],
+            
+            # Error handling
+            'ignoreerrors': False,
+            'no_warnings': False,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Get video info first
             info = ydl.extract_info(url, download=False)
             title = info.get('title', 'Unknown')
             duration = info.get('duration', 0)
             
+            # Check available formats for quality info
+            formats = info.get('formats', [])
+            best_quality = "Unknown"
+            for fmt in formats:
+                if fmt.get('vcodec') != 'none':  # Video stream
+                    height = fmt.get('height', 0)
+                    if height >= 2160:
+                        best_quality = "4K"
+                        break
+                    elif height >= 1440:
+                        best_quality = "1440p"
+                    elif height >= 1080 and best_quality == "Unknown":
+                        best_quality = "1080p"
+                    elif height >= 720 and best_quality == "Unknown":
+                        best_quality = "720p"
+            
+            st.info(f"📹 Available quality: {best_quality}")
+            
+            # Download video and subtitles
             ydl.download([url])
             
+            # Find downloaded video file
             video_files = list(Path(temp_dir).glob('video.*'))
             if not video_files:
                 raise Exception("No video file downloaded")
             
             video_path = str(video_files[0])
-            subtitle_files = list(Path(temp_dir).glob('*.vtt'))
-            subtitle_path = str(subtitle_files[0]) if subtitle_files else None
+            
+            # Look for subtitle files (both VTT and SRT)
+            subtitle_files = list(Path(temp_dir).glob('*.vtt')) + list(Path(temp_dir).glob('*.srt'))
+            
+            # Prefer English subtitles
+            subtitle_path = None
+            for sub_file in subtitle_files:
+                if any(lang in str(sub_file).lower() for lang in ['en', 'english']):
+                    subtitle_path = str(sub_file)
+                    break
+            
+            # If no English subs found, take the first available
+            if not subtitle_path and subtitle_files:
+                subtitle_path = str(subtitle_files[0])
+            
+            if subtitle_path:
+                st.success(f"✅ Found subtitles: {os.path.basename(subtitle_path)}")
+            else:
+                st.warning("⚠️ No subtitles found - will create clips without captions")
             
             return video_path, subtitle_path, title, duration
             
@@ -55,8 +107,8 @@ def download_video_and_subtitles(url, temp_dir):
         st.error(f"Error downloading video: {str(e)}")
         return None, None, None, None
 
-def parse_vtt_subtitles(subtitle_path):
-    """Parse VTT subtitle file"""
+def parse_subtitles(subtitle_path):
+    """Parse subtitle file (VTT or SRT format)"""
     subtitles = []
     if not subtitle_path or not os.path.exists(subtitle_path):
         return subtitles
@@ -65,41 +117,124 @@ def parse_vtt_subtitles(subtitle_path):
         with open(subtitle_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        blocks = re.split(r'\n\s*\n', content)
+        # Determine file format
+        is_srt = subtitle_path.lower().endswith('.srt')
         
-        for block in blocks:
-            lines = block.strip().split('\n')
-            if len(lines) >= 2:
-                for line in lines:
-                    if '-->' in line:
-                        timestamp_line = line
-                        text_start_idx = lines.index(timestamp_line) + 1
-                        text_lines = lines[text_start_idx:]
-                        
-                        timestamps = timestamp_line.split(' --> ')
-                        if len(timestamps) == 2:
-                            start_time = parse_timestamp(timestamps[0])
-                            end_time = parse_timestamp(timestamps[1])
-                            
-                            text = ' '.join(text_lines)
-                            text = re.sub(r'<[^>]+>', '', text)
-                            text = text.strip()
-                            
-                            if text and start_time is not None and end_time is not None:
-                                subtitles.append({
-                                    'start': start_time,
-                                    'end': end_time,
-                                    'text': text
-                                })
-                        break
+        if is_srt:
+            # Parse SRT format
+            subtitles = parse_srt_format(content)
+        else:
+            # Parse VTT format
+            subtitles = parse_vtt_format(content)
         
+        st.info(f"📝 Parsed {len(subtitles)} subtitle segments from {'SRT' if is_srt else 'VTT'} file")
         return sorted(subtitles, key=lambda x: x['start'])
         
     except Exception as e:
         st.warning(f"Error parsing subtitles: {str(e)}")
         return []
 
-def parse_timestamp(timestamp_str):
+def parse_srt_format(content):
+    """Parse SRT subtitle format"""
+    subtitles = []
+    
+    # Split by double newlines to get subtitle blocks
+    blocks = re.split(r'\n\s*\n', content.strip())
+    
+    for block in blocks:
+        lines = block.strip().split('\n')
+        if len(lines) >= 3:
+            # SRT format: number, timestamp, text
+            try:
+                # Second line should contain timestamps
+                timestamp_line = lines[1]
+                if '-->' in timestamp_line:
+                    timestamps = timestamp_line.split(' --> ')
+                    if len(timestamps) == 2:
+                        start_time = parse_srt_timestamp(timestamps[0].strip())
+                        end_time = parse_srt_timestamp(timestamps[1].strip())
+                        
+                        # Join all text lines after timestamp
+                        text_lines = lines[2:]
+                        text = ' '.join(text_lines)
+                        text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
+                        text = text.strip()
+                        
+                        if text and start_time is not None and end_time is not None:
+                            subtitles.append({
+                                'start': start_time,
+                                'end': end_time,
+                                'text': text
+                            })
+            except:
+                continue
+    
+    return subtitles
+
+def parse_vtt_format(content):
+    """Parse VTT subtitle format"""
+    subtitles = []
+    
+    # Split by empty lines to get individual subtitle blocks
+    blocks = re.split(r'\n\s*\n', content)
+    
+    for block in blocks:
+        lines = block.strip().split('\n')
+        if len(lines) >= 2:
+            # Look for timestamp line
+            for line in lines:
+                if '-->' in line:
+                    timestamp_line = line
+                    # Find text lines (everything after timestamp)
+                    text_start_idx = lines.index(timestamp_line) + 1
+                    text_lines = lines[text_start_idx:]
+                    
+                    # Parse timestamps
+                    timestamps = timestamp_line.split(' --> ')
+                    if len(timestamps) == 2:
+                        start_time = parse_vtt_timestamp(timestamps[0])
+                        end_time = parse_vtt_timestamp(timestamps[1])
+                        
+                        # Join text lines and clean
+                        text = ' '.join(text_lines)
+                        text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
+                        text = text.strip()
+                        
+                        if text and start_time is not None and end_time is not None:
+                            subtitles.append({
+                                'start': start_time,
+                                'end': end_time,
+                                'text': text
+                            })
+                    break
+    
+    return subtitles
+
+def parse_srt_timestamp(timestamp_str):
+    """Parse SRT timestamp format (00:00:00,000)"""
+    try:
+        # SRT format: hours:minutes:seconds,milliseconds
+        timestamp_str = timestamp_str.strip()
+        
+        # Replace comma with dot for milliseconds
+        timestamp_str = timestamp_str.replace(',', '.')
+        
+        # Split time components
+        time_components = timestamp_str.split(':')
+        
+        if len(time_components) == 3:
+            hours = int(time_components[0])
+            minutes = int(time_components[1])
+            seconds_ms = float(time_components[2])
+            
+            total_seconds = hours * 3600 + minutes * 60 + seconds_ms
+            return total_seconds
+        
+        return None
+    except:
+        return None
+
+def parse_vtt_timestamp(timestamp_str):
     """Parse VTT timestamp to seconds"""
     try:
         timestamp_str = timestamp_str.strip().split()[0]
@@ -277,7 +412,7 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
         # Output file
         output_file = os.path.join(temp_dir, f'clip_{clip_index+1}.mp4')
         
-        # FFmpeg command
+        # Enhanced FFmpeg command for high quality output
         cmd = [
             'ffmpeg', '-y',
             '-ss', str(moment['start_time']),
@@ -286,12 +421,18 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
             '-filter_complex_script', filtergraph_file,
             '-map', '[out]',
             '-map', '0:a',
-            '-c:a', 'aac',
-            '-b:a', '128k',
+            # High quality video encoding
             '-c:v', 'libx264',
-            '-preset', 'medium',
-            '-crf', '23',
+            '-preset', 'slow',  # Better compression
+            '-crf', '18',       # Higher quality (lower = better)
+            '-pix_fmt', 'yuv420p',
+            # High quality audio encoding
+            '-c:a', 'aac',
+            '-b:a', '192k',     # Higher audio bitrate
+            '-ar', '48000',     # Higher sample rate
+            # Output optimization
             '-movflags', '+faststart',
+            '-max_muxing_queue_size', '9999',
             output_file
         ]
         
@@ -332,8 +473,17 @@ def create_download_zip(clips, temp_dir):
     return zip_path
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - FIXED VERSION")
-st.write("✅ Fixed filtergraph issues - Should work without errors!")
+st.title("🎬 YouTube Shorts Generator - HIGH QUALITY VERSION")
+st.write("✅ **Enhanced Features:** 4K Quality Downloads + Perfect Subtitle Parsing!")
+
+# Quality info
+st.info("""
+🚀 **Latest Improvements:**
+- 📹 **4K Quality Downloads**: Downloads highest available resolution (4K, 1080p, etc.)
+- 📝 **Enhanced Subtitles**: Supports both SRT and VTT formats with better parsing
+- 🎨 **High Quality Output**: CRF 18 encoding with 192kbps audio for crisp results
+- 🔧 **Better Error Handling**: More reliable subtitle detection and processing
+""")
 
 # Settings
 st.sidebar.header("🎨 Settings")
@@ -381,7 +531,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
         st.success(f"✅ Downloaded: {title}")
         
         with st.spinner("📝 Analyzing subtitles..."):
-            subtitles = parse_vtt_subtitles(subtitle_path)
+            subtitles = parse_subtitles(subtitle_path)
         
         if not subtitles:
             st.warning("⚠️ No subtitles found. Creating simple clips...")
