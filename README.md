@@ -1,17 +1,31 @@
-# YouTube Shorts Generator - MOBILE OPTIMIZED
+# YouTube Shorts Generator - VIRAL OPTIMIZED
 
-A Streamlit app that converts YouTube videos into viral-ready vertical shorts (9:16 format) with **YouTube Shorts optimized subtitles** and mobile-first design.
+A Streamlit app that converts YouTube videos into viral-ready vertical shorts (9:16 format) with **advanced subject detection**, **viral hook enhancement**, and **perfect subtitle timing**.
 
-## ✅ Latest Features (v4.0) - YOUTUBE SHORTS OPTIMIZATION
+## ✅ Latest Features (v5.0) - VIRAL OPTIMIZATION UPDATE
 
-- **📱 Word-by-Word Subtitles**: Breaks sentences into 1-2 word segments for mobile readability
-- **⏱️ Perfect Timing**: Each word appears for 0.5-0.8 seconds (optimal for engagement)
-- **🌈 Multi-Color Display**: Cycling bright colors (yellow, cyan, lime, magenta, orange, white)
-- **📐 Mobile-First Positioning**: Large font (6.5% of height), bottom 18% placement, centered
-- **🔄 Dual Mode Support**: YouTube Shorts optimized OR traditional full sentences
-- **🛡️ Automatic Error Recovery**: Progressive fallbacks ensure reliable generation
-- **👤 Smart Face Detection**: Automatically crops to keep speakers in frame
-- **📥 Stable Processing**: Fixed input file errors and filter syntax issues
+### **🎯 Enhanced Smart Cropping**
+- **Multi-Subject Detection**: Faces, profiles, bodies, and moving objects
+- **Confidence Scoring**: Weighted detection with priority ranking
+- **All Speakers in Frame**: Keeps multiple people visible during conversations
+- **Detection Feedback**: Shows what was detected and confidence levels
+
+### **🎣 Viral Hook Detection & Enhancement**
+- **AI Pattern Recognition**: Detects shocking, emotional, and engaging phrases
+- **3-Second Hook Extraction**: Perfect for TikTok/YouTube Shorts algorithms
+- **Visual Enhancement**: Bold text, zoom effects, special colors for hooks
+- **Smart Placement**: Hooks positioned at video start for maximum impact
+
+### **📱 Sequential Subtitle System**
+- **NO MORE OVERLAP**: Fixed rainbow subtitle chaos - words appear one by one
+- **Global Color Cycling**: Consistent color progression throughout video
+- **Perfect Timing**: 0.6-0.8 seconds per word group with no overlap
+- **Mobile Optimized**: Large fonts, bottom positioning, high contrast
+
+### **🚫 Double Caption Fix**
+- **Burned-in Caption Avoidance**: Smart format selection to avoid YouTube's embedded captions
+- **Clean Overlays**: Only your custom subtitles appear, no duplication
+- **Format Validation**: Ensures video files (not subtitle files) are processed
 
 ## 🛠️ Setup Instructions
 
@@ -69,26 +83,44 @@ streamlit run streamlit_app.py
 
 1. **Start the app**: `streamlit run streamlit_app.py`
 2. **Enter YouTube URL** in the text input
-3. **Configure settings** in the sidebar:
-   - ✅ **Enable "YouTube Shorts optimized subtitles"** (recommended)
-   - Choose subtitle style for traditional mode
-   - Set clip duration and format
-   - Enable smart cropping
-4. **Download video** - Click to process
-5. **Generate clips** - Creates 3-5 viral moments
+3. **Configure advanced settings** in the sidebar:
+   - ✅ **Enable "YouTube Shorts optimized subtitles"** 
+   - ✅ **Enable "Viral hook detection"** (finds best 3-sec moment)
+   - ✅ **Enable "Smart subject detection"** (keeps speakers in frame)
+   - ✅ **Enable "Avoid videos with burned-in captions"**
+   - Choose hook enhancement style (Bold + zoom recommended)
+   - Set clip duration and output format
+4. **Download video** - App analyzes for best quality
+5. **Generate clips** - Creates viral moments with enhanced hooks
 6. **Download results** - Individual clips or ZIP file
 
-## 📱 YouTube Shorts Optimization
+## 🎣 Viral Hook Features
 
-**When "YouTube Shorts optimized subtitles" is enabled:**
-- Sentences break into **1-2 words maximum**
-- Each word appears for **0.5-0.8 seconds** 
-- **Bright cycling colors**: yellow → cyan → lime → magenta → orange → white
-- **Large mobile-friendly font** (6.5% of screen height)
-- **Bottom positioning** (18% from bottom, centered)
-- **Black box background** for maximum readability
+**Hook Detection Process:**
+1. **Pattern Analysis**: Scans for shocking, emotional, question, and number patterns
+2. **Timing Optimization**: Extracts perfect 3-second hook segments  
+3. **Visual Enhancement**: Applies bold text, larger fonts, special colors
+4. **Strategic Placement**: Positions hook at clip beginning for maximum engagement
 
-**Traditional mode** shows full sentences at once (good for longer content)
+**Hook Enhancement Options:**
+- **Bold text + zoom**: 40% larger font, yellow color, red background
+- **Extra large text**: 60% larger font, prominent positioning
+- **Pulsing effect**: Animated-style emphasis with orange background
+- **None**: Standard subtitle formatting
+
+## 📱 Advanced Subtitle System
+
+**Sequential Word Display:**
+- **No Overlap**: Words appear one at a time in perfect sequence
+- **0.6-0.8 second timing** per word group (optimal for retention)
+- **Global color cycling**: Consistent color progression across entire video
+- **Smart grouping**: 1-2 words per segment based on sentence length
+
+**Subject Detection & Cropping:**
+- **Multi-modal detection**: Faces, profiles, bodies, moving objects
+- **Confidence scoring**: Weighted positioning based on detection quality
+- **All speakers visible**: Keeps conversations properly framed
+- **Real-time feedback**: Shows detection results and confidence levels
 
 ## 🔧 Troubleshooting
 

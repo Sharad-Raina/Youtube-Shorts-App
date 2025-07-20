@@ -42,7 +42,7 @@ def create_temp_dir():
     os.makedirs(temp_dir, exist_ok=True)
     return temp_dir
 
-def download_video_and_subtitles(url, temp_dir, force_auto_captions=True, accept_any_language=False):
+def download_video_and_subtitles(url, temp_dir, force_auto_captions=True, accept_any_language=False, avoid_burned_captions=True):
     """Download video and subtitles using yt-dlp with enhanced caption detection"""
     try:
         # First, extract info to check available subtitles
@@ -113,8 +113,15 @@ def download_video_and_subtitles(url, temp_dir, force_auto_captions=True, accept
                 st.info(f"📝 Using subtitles in '{subtitle_lang}' (no English found)")
         
         # Now download video with the specific subtitle language
+        # Choose format based on burned caption preferences
+        if avoid_burned_captions:
+            # Prefer formats without hardcoded subtitles
+            video_format = 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best[ext=mp4]/best'
+        else:
+            video_format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            
         download_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': video_format,
             'outtmpl': f'{temp_dir}/video.%(ext)s',
             'quiet': False,
             'no_warnings': False,
@@ -420,21 +427,88 @@ def ms_to_srt_timestamp(ms):
     
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
-def detect_faces_in_frame(frame):
-    """Detect faces in a frame using OpenCV"""
+def detect_subjects_in_frame(frame):
+    """Enhanced detection of subjects (faces, bodies, and important objects)"""
     try:
-        # Convert to grayscale
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Load face cascade
+        # Multiple detection cascades for better coverage
+        detections = []
+        
+        # 1. Face detection (primary)
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4, minSize=(30, 30))
+        for (x, y, w, h) in faces:
+            detections.append({
+                'type': 'face',
+                'x': x, 'y': y, 'w': w, 'h': h,
+                'center': (x + w//2, y + h//2),
+                'confidence': 1.0,  # Faces get highest priority
+                'area': w * h
+            })
         
-        # Detect faces
-        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        # 2. Profile face detection (backup)
+        try:
+            profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+            profiles = profile_cascade.detectMultiScale(gray, 1.1, 4, minSize=(30, 30))
+            for (x, y, w, h) in profiles:
+                detections.append({
+                    'type': 'profile',
+                    'x': x, 'y': y, 'w': w, 'h': h,
+                    'center': (x + w//2, y + h//2),
+                    'confidence': 0.8,
+                    'area': w * h
+                })
+        except:
+            pass  # Profile cascade might not be available
         
-        return faces
+        # 3. Upper body detection (fallback for when faces aren't visible)
+        try:
+            body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_upperbody.xml')
+            bodies = body_cascade.detectMultiScale(gray, 1.1, 3, minSize=(50, 50))
+            for (x, y, w, h) in bodies:
+                detections.append({
+                    'type': 'body',
+                    'x': x, 'y': y, 'w': w, 'h': h,
+                    'center': (x + w//2, y + h//2),
+                    'confidence': 0.6,
+                    'area': w * h
+                })
+        except:
+            pass  # Upper body cascade might not be available
+        
+        # 4. Motion-based detection (detect moving subjects)
+        if len(detections) == 0:
+            # Use edge detection as fallback for any prominent subjects
+            edges = cv2.Canny(gray, 50, 150)
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area > 1000:  # Minimum size threshold
+                    x, y, w, h = cv2.boundingRect(contour)
+                    if w > 30 and h > 30:  # Reasonable dimensions
+                        detections.append({
+                            'type': 'object',
+                            'x': x, 'y': y, 'w': w, 'h': h,
+                            'center': (x + w//2, y + h//2),
+                            'confidence': 0.3,
+                            'area': area
+                        })
+        
+        return detections
     except:
         return []
+
+def detect_faces_in_frame(frame):
+    """Legacy function for compatibility - uses new subject detection"""
+    subjects = detect_subjects_in_frame(frame)
+    # Convert to old format for backward compatibility
+    faces = []
+    for subject in subjects:
+        if subject['type'] in ['face', 'profile']:
+            faces.append((subject['x'], subject['y'], subject['w'], subject['h']))
+    return faces
 
 def get_optimal_crop_region(video_path, width, height, sample_frames=10):
     """Analyze video to find optimal crop region that includes speakers"""
@@ -461,7 +535,8 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
         # Sample frames throughout the video
         frame_indices = np.linspace(0, total_frames - 1, sample_frames, dtype=int)
         
-        all_face_centers = []
+        all_subject_centers = []
+        subject_stats = {'face': 0, 'profile': 0, 'body': 0, 'object': 0}
         
         for idx in frame_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -469,21 +544,39 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
             if not ret:
                 continue
             
-            faces = detect_faces_in_frame(frame)
+            subjects = detect_subjects_in_frame(frame)
             
-            # Calculate face centers
-            for (x, y, w, h) in faces:
-                center_x = x + w // 2
-                center_y = y + h // 2
-                all_face_centers.append((center_x, center_y))
+            # Calculate subject centers with weighted importance
+            for subject in subjects:
+                center_x, center_y = subject['center']
+                confidence = subject['confidence']
+                subject_type = subject['type']
+                
+                # Weight centers by confidence and subject type
+                weighted_center = (center_x, center_y, confidence, subject_type)
+                all_subject_centers.append(weighted_center)
+                subject_stats[subject_type] += 1
         
         cap.release()
         
-        # Calculate optimal crop
-        if all_face_centers:
-            # Find the average position of all faces
-            avg_x = sum(x for x, y in all_face_centers) / len(all_face_centers)
-            avg_y = sum(y for x, y in all_face_centers) / len(all_face_centers)
+        # Calculate optimal crop with enhanced subject detection
+        if all_subject_centers:
+            # Calculate weighted average position of all subjects
+            total_weight = sum(confidence for x, y, confidence, s_type in all_subject_centers)
+            
+            if total_weight > 0:
+                avg_x = sum(x * confidence for x, y, confidence, s_type in all_subject_centers) / total_weight
+                avg_y = sum(y * confidence for x, y, confidence, s_type in all_subject_centers) / total_weight
+            else:
+                avg_x = sum(x for x, y, confidence, s_type in all_subject_centers) / len(all_subject_centers)
+                avg_y = sum(y for x, y, confidence, s_type in all_subject_centers) / len(all_subject_centers)
+            
+            # Provide detection feedback
+            detection_info = []
+            for s_type, count in subject_stats.items():
+                if count > 0:
+                    detection_info.append(f"{count} {s_type}(s)")
+            detection_summary = ", ".join(detection_info) if detection_info else "subjects"
             
             # Calculate crop dimensions
             if current_aspect > target_aspect:
@@ -510,7 +603,10 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 'y': crop_y,
                 'width': crop_width,
                 'height': crop_height,
-                'has_faces': True
+                'has_subjects': True,
+                'detection_summary': detection_summary,
+                'subject_stats': subject_stats,
+                'confidence_score': total_weight / len(all_subject_centers) if all_subject_centers else 0
             }
         else:
             # No faces detected - use center crop
@@ -530,7 +626,10 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 'y': crop_y,
                 'width': crop_width,
                 'height': crop_height,
-                'has_faces': False
+                'has_subjects': False,
+                'detection_summary': "No subjects detected - using center crop",
+                'subject_stats': {'face': 0, 'profile': 0, 'body': 0, 'object': 0},
+                'confidence_score': 0
             }
     except Exception as e:
         st.warning(f"⚠️ Could not analyze video for smart cropping: {e}")
@@ -690,6 +789,99 @@ def parse_vtt_timestamp(timestamp_str):
     except:
         return None
 
+def detect_viral_hook(subtitles, duration=3):
+    """Detect the most attention-grabbing 3-second hook segment"""
+    hook_triggers = [
+        # Surprising/shocking phrases
+        r'\b(shocking|amazing|incredible|unbelievable|crazy|insane|mind-blowing)\b',
+        r'\b(you won\'t believe|wait until|this will)\b',
+        r'\b(secret|hidden|never|always|mistake|wrong)\b',
+        
+        # Numbers and statistics  
+        r'\b(\d+%|\d+x|million|billion|thousand)\b',
+        r'\b(first|last|only|best|worst)\b',
+        
+        # Emotional triggers
+        r'\b(love|hate|angry|excited|scared|surprised)\b',
+        r'\b(why|how|what|when|where)\b',
+        
+        # Action/urgency
+        r'\b(now|today|immediately|quick|fast|stop)\b',
+        r'\b(watch|see|look|listen|check)\b',
+        
+        # Questions and direct address
+        r'\b(you|your|did you|can you|will you)\b',
+        r'[\?!]{1,3}',  # Question marks and exclamations
+    ]
+    
+    hook_scores = []
+    
+    for i, subtitle in enumerate(subtitles):
+        text = subtitle['text'].lower()
+        score = 0
+        
+        # Check for hook trigger patterns
+        for pattern in hook_triggers:
+            matches = len(re.findall(pattern, text, re.IGNORECASE))
+            score += matches * 2
+        
+        # Boost score for early content (first 30% of video)
+        if i < len(subtitles) * 0.3:
+            score *= 1.5
+        
+        # Boost score for sentences with questions or exclamations
+        if '?' in text or '!' in text:
+            score += 3
+        
+        # Boost score for short, punchy statements
+        if len(text.split()) <= 5:
+            score += 2
+        
+        # Boost score for ALL CAPS words (excitement)
+        caps_words = len([w for w in subtitle['text'].split() if w.isupper() and len(w) > 2])
+        score += caps_words
+        
+        hook_scores.append({
+            'subtitle': subtitle,
+            'score': score,
+            'index': i,
+            'trigger_words': [pattern for pattern in hook_triggers if re.search(pattern, text, re.IGNORECASE)]
+        })
+    
+    # Find the highest scoring segment
+    if not hook_scores:
+        return None
+    
+    # Sort by score and get top candidates
+    hook_scores.sort(key=lambda x: x['score'], reverse=True)
+    best_hook = hook_scores[0]
+    
+    if best_hook['score'] == 0:
+        # If no triggers found, use the first subtitle as fallback
+        return {
+            'start_time': subtitles[0]['start'],
+            'end_time': min(subtitles[0]['start'] + duration, subtitles[0]['end']),
+            'duration': duration,
+            'subtitle': subtitles[0],
+            'score': 0,
+            'trigger_words': [],
+            'type': 'fallback'
+        }
+    
+    subtitle = best_hook['subtitle']
+    start_time = subtitle['start']
+    end_time = min(start_time + duration, subtitle['end'])
+    
+    return {
+        'start_time': start_time,
+        'end_time': end_time,
+        'duration': end_time - start_time,
+        'subtitle': subtitle,
+        'score': best_hook['score'],
+        'trigger_words': best_hook['trigger_words'],
+        'type': 'detected'
+    }
+
 def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
     """Find potential viral moments in subtitles"""
     viral_patterns = [
@@ -807,6 +999,8 @@ def create_word_by_word_subtitles(clip_subtitles, width, height, ascii_only=True
         'white',       # White fallback
     ]
     
+    global_word_index = 0  # Track words across all subtitles for consistent coloring
+    
     for subtitle in clip_subtitles:
         text = escape_text_for_ffmpeg(subtitle['text'], ascii_only)
         if not text or text == "Sample Text":
@@ -830,25 +1024,43 @@ def create_word_by_word_subtitles(clip_subtitles, width, height, ascii_only=True
         if not word_groups:
             continue
             
-        # Calculate timing for each group (0.5-0.8 seconds each)
-        duration_per_group = max(0.5, min(0.8, total_duration / len(word_groups)))
+        # Calculate timing for each group (0.6-0.8 seconds each, no overlap)
+        duration_per_group = max(0.6, min(0.8, total_duration / len(word_groups)))
         
         for i, word_group in enumerate(word_groups):
             start_time = subtitle['start'] + (i * duration_per_group)
-            end_time = min(subtitle['end'], start_time + duration_per_group)
+            end_time = start_time + duration_per_group
             
             # Ensure we don't exceed the original subtitle end time
             if start_time >= subtitle['end']:
                 break
-                
-            word_subtitles.append({
-                'text': word_group,
-                'start': start_time,
-                'end': end_time,
-                'color': colors[i % len(colors)],  # Cycle through colors
-                'font_size': int(height * 0.065),  # Larger font for mobile (6.5% of height)
-                'y_position': height - int(height * 0.18)  # Bottom 18% of screen
-            })
+            
+            # Clamp end time to subtitle boundary
+            end_time = min(end_time, subtitle['end'])
+            
+            # Only add if there's meaningful duration
+            if end_time > start_time:
+                word_subtitles.append({
+                    'text': word_group,
+                    'start': start_time,
+                    'end': end_time,
+                    'color': colors[global_word_index % len(colors)],  # Global color cycling
+                    'font_size': int(height * 0.065),  # Larger font for mobile (6.5% of height)
+                    'y_position': height - int(height * 0.18)  # Bottom 18% of screen
+                })
+                global_word_index += 1
+    
+    # Sort by start time to ensure proper sequential display
+    word_subtitles.sort(key=lambda x: x['start'])
+    
+    # Debug: Check for any overlapping timings and fix them
+    for i in range(1, len(word_subtitles)):
+        prev_end = word_subtitles[i-1]['end']
+        curr_start = word_subtitles[i]['start']
+        
+        # If there's overlap, adjust the previous subtitle's end time
+        if prev_end > curr_start:
+            word_subtitles[i-1]['end'] = curr_start - 0.1  # 0.1 second gap
     
     return word_subtitles
 
@@ -934,7 +1146,7 @@ def get_system_font():
     else:  # Linux and others
         return "Sans"  # Generic sans-serif
 
-def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, youtube_shorts_mode=False, ultra_simple_video=False):
+def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, youtube_shorts_mode=False, ultra_simple_video=False, hook_data=None, add_progress_bar=False, hook_enhancement="None"):
     """Create a shorts clip with proper 9:16 format and working subtitles"""
     try:
         st.write(f"🎬 Creating clip {clip_index+1} with {len(moment['subtitles'])} subtitles...")
@@ -976,6 +1188,29 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                 st.info(f"💾 Subtitle debug file saved: {os.path.basename(debug_file)}")
         else:
             st.info("ℹ️ Subtitles disabled for this clip")
+        
+        # Check if this clip contains the viral hook
+        contains_hook = False
+        hook_in_clip = None
+        if hook_data and clip_subtitles:
+            clip_start = moment['start_time']
+            clip_end = moment['end_time']
+            hook_start = hook_data['start_time']
+            hook_end = hook_data['end_time']
+            
+            # Check if hook overlaps with this clip
+            if hook_start < clip_end and hook_end > clip_start:
+                contains_hook = True
+                # Calculate hook timing relative to clip
+                relative_hook_start = max(0, hook_start - clip_start)
+                relative_hook_end = min(clip_end - clip_start, hook_end - clip_start)
+                hook_in_clip = {
+                    'start': relative_hook_start,
+                    'end': relative_hook_end,
+                    'text': hook_data['subtitle']['text'],
+                    'enhancement': hook_enhancement
+                }
+                st.info(f"🎣 This clip contains the viral hook! ({relative_hook_start:.1f}s - {relative_hook_end:.1f}s)")
         
         # Build filter complex string directly
         filters = []
@@ -1069,21 +1304,94 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                     font_size = word_sub['font_size']
                     color = word_sub['color']
                     y_pos = word_sub['y_position']
+                    
+                    # Check if this subtitle is part of the viral hook
+                    is_hook_text = False
+                    if contains_hook and hook_in_clip:
+                        word_start = word_sub['start']
+                        word_end = word_sub['end']
+                        hook_start = hook_in_clip['start']
+                        hook_end = hook_in_clip['end']
+                        
+                        # Check if word timing overlaps with hook timing
+                        if word_start < hook_end and word_end > hook_start:
+                            is_hook_text = True
                 
                     # YouTube Shorts mode: Simple, bright, centered subtitles
                     try:
-                        # Build drawtext filter optimized for mobile viewing
-                        drawtext_params = [
-                            f"text='{escaped_text}'",
-                            f"fontsize={font_size}",
-                            f"fontcolor={color}",
-                            "x=(w-text_w)/2",  # Center horizontally
-                            f"y={y_pos}",      # Position at bottom
-                            "box=1",           # Always use box for readability
-                            "boxcolor=black@0.7",  # Semi-transparent black background
-                            "boxborderw=8",    # Thick border for mobile
-                            f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
-                        ]
+                        # Enhance hook text with special formatting
+                        if is_hook_text and hook_enhancement != "None":
+                            if hook_enhancement == "Bold text + zoom":
+                                font_size = int(font_size * 1.4)  # 40% larger
+                                color = "yellow"  # Force yellow for hooks
+                                drawtext_params = [
+                                    f"text='{escaped_text}'",
+                                    f"fontsize={font_size}",
+                                    f"fontcolor={color}",
+                                    "x=(w-text_w)/2",  
+                                    f"y={y_pos - 20}",  # Slightly higher position
+                                    "box=1", 
+                                    "boxcolor=red@0.8",  # Red background for hooks
+                                    "boxborderw=12",     # Thicker border
+                                    "borderw=4",         # Bold outline
+                                    "bordercolor=black",
+                                    f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
+                                ]
+                            elif hook_enhancement == "Extra large text":
+                                font_size = int(font_size * 1.6)  # 60% larger
+                                color = "yellow"
+                                drawtext_params = [
+                                    f"text='{escaped_text}'",
+                                    f"fontsize={font_size}",
+                                    f"fontcolor={color}",
+                                    "x=(w-text_w)/2",  
+                                    f"y={y_pos - 30}", 
+                                    "box=1", 
+                                    "boxcolor=black@0.9",  
+                                    "boxborderw=15",     
+                                    f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
+                                ]
+                            elif hook_enhancement == "Pulsing effect":
+                                # Note: FFmpeg pulsing would require complex expressions
+                                font_size = int(font_size * 1.3)  
+                                color = "yellow"
+                                drawtext_params = [
+                                    f"text='{escaped_text}'",
+                                    f"fontsize={font_size}",
+                                    f"fontcolor={color}",
+                                    "x=(w-text_w)/2",  
+                                    f"y={y_pos - 15}", 
+                                    "box=1", 
+                                    "boxcolor=orange@0.8",  
+                                    "boxborderw=10",     
+                                    f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
+                                ]
+                            else:
+                                # Default hook enhancement
+                                drawtext_params = [
+                                    f"text='{escaped_text}'",
+                                    f"fontsize={font_size}",
+                                    f"fontcolor={color}",
+                                    "x=(w-text_w)/2",  
+                                    f"y={y_pos}",      
+                                    "box=1",           
+                                    "boxcolor=black@0.7", 
+                                    "boxborderw=8",    
+                                    f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
+                                ]
+                        else:
+                            # Regular subtitle formatting
+                            drawtext_params = [
+                                f"text='{escaped_text}'",
+                                f"fontsize={font_size}",
+                                f"fontcolor={color}",
+                                "x=(w-text_w)/2",  # Center horizontally
+                                f"y={y_pos}",      # Position at bottom
+                                "box=1",           # Always use box for readability
+                                "boxcolor=black@0.7",  # Semi-transparent black background
+                                "boxborderw=8",    # Thick border for mobile
+                                f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
+                            ]
                         
                         # Join all parameters
                         drawtext_filter = f"[{base_label}]drawtext=" + ":".join(drawtext_params) + f"[word{i}]"
@@ -1363,8 +1671,8 @@ if 'smart_crop_region' not in st.session_state:
     st.session_state.smart_crop_region = None
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - MOBILE OPTIMIZED")
-st.write("✅ **Word-by-word subtitles + Multiple colors + Mobile-first design**")
+st.title("🎬 YouTube Shorts Generator - VIRAL OPTIMIZED")
+st.write("✅ **Smart cropping + Viral hooks + Sequential subtitles + No double captions**")
 
 # Check FFmpeg availability
 ffmpeg_available, ffmpeg_message = check_ffmpeg_availability()
@@ -1375,15 +1683,15 @@ if not ffmpeg_available:
 
 # Quality info
 st.info("""
-🚀 **YouTube Shorts Optimized Features:**
-- 📱 **Mobile-First Subtitles**: Word-by-word display (1-2 words, 0.5-0.8s each)
-- 🌈 **Multiple Colors**: Cycling bright colors (yellow, cyan, lime, magenta, orange)
-- 📐 **Perfect Positioning**: Bottom 18% of screen, centered, large readable font
-- 🔄 **Automatic Recovery**: Robust error handling with progressive fallbacks
-- 🎨 **Dual Modes**: YouTube Shorts optimized OR traditional full sentences
-- 👤 **Smart Cropping**: Face detection keeps speakers in frame
-- 📥 **Stable Downloads**: Persistent download buttons
-- 🧪 **Debug Output**: Comprehensive troubleshooting information
+🚀 **Advanced YouTube Shorts Features:**
+- 🎯 **Enhanced Subject Detection**: Faces, profiles, bodies, and moving objects
+- 🎣 **Viral Hook Detection**: Automatically finds and enhances attention-grabbing moments
+- 📱 **Sequential Word Subtitles**: No more overlapping rainbow text - proper timing
+- 🚫 **No Double Captions**: Avoids burned-in YouTube captions + clean overlay
+- 👤 **Smart Multi-Subject Cropping**: Keeps all speakers in frame with confidence scoring
+- 🎬 **Hook Enhancement**: Bold text, zoom effects, special formatting for viral moments
+- 🌈 **Global Color Cycling**: Consistent color progression across all subtitle segments
+- 📥 **Stable Processing**: Comprehensive error recovery and format validation
 """)
 
 # Settings
@@ -1530,6 +1838,33 @@ with st.expander("🔧 Advanced Options"):
         help="Use subtitles even if they're not in English"
     )
     
+    avoid_burned_captions = st.checkbox(
+        "🚫 Avoid videos with burned-in captions",
+        value=True,
+        help="Skip videos that have captions permanently embedded in the video itself"
+    )
+    
+    # Hook Detection Section
+    st.write("**🎣 Viral Hook Detection:**")
+    enable_hook_detection = st.checkbox(
+        "🎯 Enable viral hook detection",
+        value=True,
+        help="Automatically detect and enhance the most attention-grabbing 3-second segment"
+    )
+    
+    if enable_hook_detection:
+        add_progress_bar = st.checkbox(
+            "📊 Add progress bar to hook",
+            value=True,
+            help="Show a progress bar during the hook segment for engagement"
+        )
+        
+        hook_enhancement = st.selectbox(
+            "🎬 Hook enhancement style",
+            ["Bold text + zoom", "Extra large text", "Pulsing effect", "None"],
+            help="Visual enhancement for the detected hook"
+        )
+    
     st.write("**Font Testing:**")
     if st.button("🔤 Test Font Rendering"):
         test_font_rendering()
@@ -1561,6 +1896,14 @@ if 'force_auto_captions' not in locals():
     force_auto_captions = True
 if 'accept_any_language' not in locals():
     accept_any_language = False
+if 'avoid_burned_captions' not in locals():
+    avoid_burned_captions = True
+if 'enable_hook_detection' not in locals():
+    enable_hook_detection = False
+if 'add_progress_bar' not in locals():
+    add_progress_bar = False
+if 'hook_enhancement' not in locals():
+    hook_enhancement = "None"
 
 # Show existing clips if available
 if st.session_state.video_processed and st.session_state.clips:
@@ -1621,7 +1964,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
         st.session_state.temp_dir = temp_dir
         
         with st.spinner("📥 Downloading video..."):
-            video_path, subtitle_path, title, duration = download_video_and_subtitles(url, temp_dir, force_auto_captions, accept_any_language)
+            video_path, subtitle_path, title, duration = download_video_and_subtitles(url, temp_dir, force_auto_captions, accept_any_language, avoid_burned_captions)
         
         if not video_path:
             st.error("Failed to download video")
@@ -1686,6 +2029,24 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                     'subtitles': clip_subs
                 })
         
+        # Detect viral hook if enabled
+        hook_data = None
+        if enable_hook_detection and subtitles:
+            with st.spinner("🎣 Detecting viral hook..."):
+                hook_data = detect_viral_hook(subtitles, duration=3)
+                
+                if hook_data:
+                    if hook_data['type'] == 'detected':
+                        st.success(f"🎯 **Viral hook detected!** Score: {hook_data['score']}")
+                        st.info(f"📍 Hook text: \"{hook_data['subtitle']['text']}\"")
+                        st.info(f"⏰ Hook timing: {hook_data['start_time']:.1f}s - {hook_data['end_time']:.1f}s")
+                        if hook_data['trigger_words']:
+                            st.info(f"🔥 Trigger words detected: {len(hook_data['trigger_words'])} patterns")
+                    else:
+                        st.info("🎣 No strong hook patterns detected - using video beginning as hook")
+                else:
+                    st.warning("⚠️ Could not detect hook - proceeding without hook enhancement")
+        
         st.info(f"🎯 Creating {len(moments[:max_clips])} clips...")
         
         # Create clips
@@ -1702,7 +2063,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
             
             clip = create_shorts_clip(
                 video_path, moment, background_style, visual_preset, motion_effects, 
-                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video
+                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video, hook_data, add_progress_bar, hook_enhancement
             )
             
             if clip:
