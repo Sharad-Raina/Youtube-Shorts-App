@@ -1985,10 +1985,10 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                     width, height = 480, 854
                 
                 smart_crop_region = get_optimal_crop_region(video_path, width, height)
-                if smart_crop_region and smart_crop_region['has_faces']:
-                    st.success("✅ Face detection successful - will use smart cropping")
+                if smart_crop_region and smart_crop_region['has_subjects']:
+                    st.success(f"✅ Subject detection successful - {smart_crop_region['detection_summary']} (confidence: {smart_crop_region['confidence_score']:.2f})")
                 else:
-                    st.info("ℹ️ No faces detected - using standard center crop")
+                    st.info("ℹ️ No subjects detected - using standard center crop")
                 
                 st.session_state.smart_crop_region = smart_crop_region
         
