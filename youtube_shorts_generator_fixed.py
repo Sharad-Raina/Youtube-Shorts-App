@@ -243,79 +243,99 @@ def create_filtergraph_file(video_path, subtitles, background_style, visual_pres
     
     colors = color_schemes.get(visual_preset, color_schemes['platform_optimized'])
     
-    # Create filtergraph
-    filtergraph = []
+    # Build the complete filtergraph as a single string
+    filtergraph_parts = []
     
-    # Input and scaling
-    filtergraph.append("[0:v]scale=1080:1920:force_original_aspect_ratio=increase[scaled]")
+    # Step 1: Scale input video to vertical format
+    filtergraph_parts.append("[0:v]scale=1080:1920:force_original_aspect_ratio=increase[scaled]")
     
-    # Background creation based on style
+    # Step 2: Create background based on style
     if background_style == "blurred":
-        filtergraph.append("[scaled]split=2[main][bg]")
-        filtergraph.append("[bg]scale=1080:1920:force_original_aspect_ratio=increase,gblur=sigma=20[blurred_bg]")
-        filtergraph.append("[blurred_bg][main]overlay=(W-w)/2:(H-h)/2[composed]")
+        # Create blurred background
+        filtergraph_parts.append("[scaled]split=2[main][bg]")
+        filtergraph_parts.append("[bg]gblur=sigma=20[blurred_bg]")
+        filtergraph_parts.append("[blurred_bg][main]overlay=(W-w)/2:(H-h)/2[composed]")
     elif background_style == "gradient":
-        filtergraph.append("[scaled]split=2[main][bg]")
-        filtergraph.append("color=c=#1a1a2e:size=1080x1920:duration=1[gradient_bg]")
-        filtergraph.append("[gradient_bg][main]overlay=(W-w)/2:(H-h)/2[composed]")
+        # Create gradient background
+        filtergraph_parts.append("color=c=#1a1a2e:size=1080x1920[gradient_bg]")
+        filtergraph_parts.append("[gradient_bg][scaled]overlay=(W-w)/2:(H-h)/2[composed]")
     else:  # original_crop
-        filtergraph.append("[scaled]crop=1080:1920:(iw-1080)/2:(ih-1920)/2[composed]")
+        # Simple center crop
+        filtergraph_parts.append("[scaled]crop=1080:1920:(iw-1080)/2:(ih-1920)/2[composed]")
     
-    # Apply visual enhancements based on preset
+    # Step 3: Apply visual enhancements
+    current_label = "composed"
     if visual_preset == 'cinematic':
-        filtergraph.append("[composed]eq=contrast=1.15:brightness=0.05:saturation=1.25:gamma=0.95[enhanced]")
-        filtergraph.append("[enhanced]curves=red='0/0 0.5/0.58 1/1':green='0/0 0.5/0.52 1/1':blue='0/0 0.5/0.48 1/1'[graded]")
+        filtergraph_parts.append(f"[{current_label}]eq=contrast=1.15:brightness=0.05:saturation=1.25:gamma=0.95[enhanced]")
+        current_label = "enhanced"
     elif visual_preset == 'high_energy':
-        filtergraph.append("[composed]eq=contrast=1.3:brightness=0.1:saturation=1.4:gamma=0.9[enhanced]")
-        filtergraph.append("[enhanced]hue=s=1.2[graded]")
+        filtergraph_parts.append(f"[{current_label}]eq=contrast=1.3:brightness=0.1:saturation=1.4:gamma=0.9[enhanced]")
+        current_label = "enhanced"
     elif visual_preset == 'platform_optimized':
-        filtergraph.append("[composed]eq=contrast=1.2:brightness=0.08:saturation=1.3:gamma=0.92[graded]")
-    else:  # minimal
-        filtergraph.append("[composed]eq=contrast=1.05:brightness=0.02:saturation=1.1[graded]")
+        filtergraph_parts.append(f"[{current_label}]eq=contrast=1.2:brightness=0.08:saturation=1.3:gamma=0.92[enhanced]")
+        current_label = "enhanced"
+    else:  # minimal - no enhancement
+        pass
     
-    # Add motion effects if enabled
+    # Step 4: Add motion effects if enabled
     if motion_effects:
-        filtergraph.append("[graded]zoompan=z='if(lte(on,1),1.1,max(1.0,1.1-0.02*(on-1)))':d=25*2:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'[motion]")
-        base_video = "motion"
-    else:
-        base_video = "graded"
+        filtergraph_parts.append(f"[{current_label}]zoompan=z='if(lte(on,1),1.05,max(1.0,1.05-0.001*on))':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'[motion]")
+        current_label = "motion"
     
-    # Add subtitle overlays
-    current_output = base_video
+    # Step 5: Add subtitle overlays
     for i, subtitle in enumerate(subtitles):
         color = colors[i % len(colors)]
         escaped_text = escape_text_for_ffmpeg(subtitle['text'])
         
-        # Simplified drawtext parameters to reduce length
-        drawtext_filter = (f"drawtext=text='{escaped_text}'"
-                          f":fontsize=80"
-                          f":fontcolor={color}"
-                          f":bordercolor=black:borderw=4"
-                          f":shadowcolor=black@0.7:shadowx=3:shadowy=3"
-                          f":box=1:boxcolor=black@0.5:boxborderw=10"
-                          f":x=(w-text_w)/2:y=h-200-text_h"
-                          f":enable='between(t,{subtitle['start']:.3f},{subtitle['end']:.3f})'")
+                         # Create drawtext filter with simpler parameters
+        clip_start = subtitle['start'] 
+        clip_end = subtitle['end']
         
-        next_output = f"sub{i}"
-        filtergraph.append(f"[{current_output}]{drawtext_filter}[{next_output}]")
-        current_output = next_output
+        drawtext_filter = (f"drawtext=text='{escaped_text}'"
+                          f":fontsize=72"
+                          f":fontcolor={color}"
+                          f":bordercolor=black:borderw=3"
+                          f":x=(w-text_w)/2:y=h-150"
+                          f":enable='between(t,{clip_start:.3f},{clip_end:.3f})'")
+        
+        next_label = f"sub{i}"
+        filtergraph_parts.append(f"[{current_label}]{drawtext_filter}[{next_label}]")
+        current_label = next_label
     
-    # Final output
-    filtergraph.append(f"[{current_output}]format=yuv420p[out]")
+    # Step 6: Final output format
+    filtergraph_parts.append(f"[{current_label}]format=yuv420p[out]")
     
     # Write filtergraph to file
     filtergraph_file = os.path.join(temp_dir, "filtergraph.txt")
     with open(filtergraph_file, 'w') as f:
-        f.write(';\n'.join(filtergraph))
+        # Join with semicolons and newlines for proper FFmpeg syntax
+        f.write(";\n".join(filtergraph_parts))
     
     return filtergraph_file
 
 def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, temp_dir, clip_index):
     """Create a single shorts clip using filtergraph file"""
     try:
+        # Adjust subtitle timing to be relative to clip start
+        clip_subtitles = []
+        clip_start_time = moment['start_time']
+        
+        for subtitle in moment['subtitles']:
+            # Convert absolute time to relative time within the clip
+            relative_start = max(0, subtitle['start'] - clip_start_time)
+            relative_end = subtitle['end'] - clip_start_time
+            
+            # Only include subtitles that appear within the clip duration
+            if relative_start < moment['duration'] and relative_end > 0:
+                clip_subtitles.append({
+                    'start': relative_start,
+                    'end': min(relative_end, moment['duration']),
+                    'text': subtitle['text']
+                })
+        
         # Create filtergraph file
         filtergraph_file = create_filtergraph_file(
-            video_path, moment['subtitles'], background_style, visual_preset, motion_effects, temp_dir
+            video_path, clip_subtitles, background_style, visual_preset, motion_effects, temp_dir
         )
         
         # Output filename
