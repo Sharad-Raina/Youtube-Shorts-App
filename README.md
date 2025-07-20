@@ -1,17 +1,17 @@
-# YouTube Shorts Generator - FILTER ERROR FIX
+# YouTube Shorts Generator - MOBILE OPTIMIZED
 
-A Streamlit app that converts YouTube videos into viral-ready vertical shorts (9:16 format) with **automatic error recovery** and ultra-reliable video processing.
+A Streamlit app that converts YouTube videos into viral-ready vertical shorts (9:16 format) with **YouTube Shorts optimized subtitles** and mobile-first design.
 
-## ✅ Latest Fixes (v3.0) - FILTER ERROR RESOLUTION
+## ✅ Latest Features (v4.0) - YOUTUBE SHORTS OPTIMIZATION
 
-- **🔄 Automatic Error Recovery**: Automatically tries simpler approaches when initial FFmpeg commands fail
-- **🔧 Ultra-Simple Processing Mode**: Emergency fallback that works even with problematic video files
-- **📐 Fixed Filter Syntax**: Resolved aspect ratio calculations and filter construction errors
-- **🛡️ Progressive Fallbacks**: Multiple recovery attempts with increasingly simple processing
-- **⚙️ Error-Proof Generation**: Works even when subtitles are disabled and complex filters fail
-- **🧪 Comprehensive Debug Output**: Saves all attempts and errors for troubleshooting
+- **📱 Word-by-Word Subtitles**: Breaks sentences into 1-2 word segments for mobile readability
+- **⏱️ Perfect Timing**: Each word appears for 0.5-0.8 seconds (optimal for engagement)
+- **🌈 Multi-Color Display**: Cycling bright colors (yellow, cyan, lime, magenta, orange, white)
+- **📐 Mobile-First Positioning**: Large font (6.5% of height), bottom 18% placement, centered
+- **🔄 Dual Mode Support**: YouTube Shorts optimized OR traditional full sentences
+- **🛡️ Automatic Error Recovery**: Progressive fallbacks ensure reliable generation
 - **👤 Smart Face Detection**: Automatically crops to keep speakers in frame
-- **🎨 Multiple Subtitle Styles**: Box, shadow, and outline options (when working)
+- **📥 Stable Processing**: Fixed input file errors and filter syntax issues
 
 ## 🛠️ Setup Instructions
 
@@ -64,6 +64,31 @@ streamlit run streamlit_app.py
 - **Face Tracking**: Crops to include speakers
 - **Quality Presets**: Optimized for different platforms
 - **Persistent Downloads**: Clips remain available after generation
+
+## 🎯 How to Use
+
+1. **Start the app**: `streamlit run streamlit_app.py`
+2. **Enter YouTube URL** in the text input
+3. **Configure settings** in the sidebar:
+   - ✅ **Enable "YouTube Shorts optimized subtitles"** (recommended)
+   - Choose subtitle style for traditional mode
+   - Set clip duration and format
+   - Enable smart cropping
+4. **Download video** - Click to process
+5. **Generate clips** - Creates 3-5 viral moments
+6. **Download results** - Individual clips or ZIP file
+
+## 📱 YouTube Shorts Optimization
+
+**When "YouTube Shorts optimized subtitles" is enabled:**
+- Sentences break into **1-2 words maximum**
+- Each word appears for **0.5-0.8 seconds** 
+- **Bright cycling colors**: yellow → cyan → lime → magenta → orange → white
+- **Large mobile-friendly font** (6.5% of screen height)
+- **Bottom positioning** (18% from bottom, centered)
+- **Black box background** for maximum readability
+
+**Traditional mode** shows full sentences at once (good for longer content)
 
 ## 🔧 Troubleshooting
 

@@ -793,6 +793,65 @@ def escape_text_for_ffmpeg(text, ascii_only=True):
     
     return text
 
+def create_word_by_word_subtitles(clip_subtitles, width, height, ascii_only=True, simple_mode=False):
+    """Convert full sentence subtitles into word-by-word display optimized for YouTube Shorts"""
+    word_subtitles = []
+    
+    # Color palette for YouTube Shorts (bright, high contrast colors)
+    colors = [
+        'yellow',      # Bright yellow - most visible
+        'cyan',        # Bright cyan  
+        'lime',        # Bright green
+        'magenta',     # Bright magenta
+        'orange',      # Orange
+        'white',       # White fallback
+    ]
+    
+    for subtitle in clip_subtitles:
+        text = escape_text_for_ffmpeg(subtitle['text'], ascii_only)
+        if not text or text == "Sample Text":
+            continue
+            
+        # Split into words (1-2 words per display)
+        words = text.split()
+        if not words:
+            continue
+            
+        # Calculate timing for each word group
+        total_duration = subtitle['end'] - subtitle['start']
+        words_per_group = 2 if len(words) > 3 else 1  # 1-2 words max
+        
+        # Group words
+        word_groups = []
+        for i in range(0, len(words), words_per_group):
+            group = ' '.join(words[i:i + words_per_group])
+            word_groups.append(group)
+        
+        if not word_groups:
+            continue
+            
+        # Calculate timing for each group (0.5-0.8 seconds each)
+        duration_per_group = max(0.5, min(0.8, total_duration / len(word_groups)))
+        
+        for i, word_group in enumerate(word_groups):
+            start_time = subtitle['start'] + (i * duration_per_group)
+            end_time = min(subtitle['end'], start_time + duration_per_group)
+            
+            # Ensure we don't exceed the original subtitle end time
+            if start_time >= subtitle['end']:
+                break
+                
+            word_subtitles.append({
+                'text': word_group,
+                'start': start_time,
+                'end': end_time,
+                'color': colors[i % len(colors)],  # Cycle through colors
+                'font_size': int(height * 0.065),  # Larger font for mobile (6.5% of height)
+                'y_position': height - int(height * 0.18)  # Bottom 18% of screen
+            })
+    
+    return word_subtitles
+
 def test_font_rendering():
     """Test FFmpeg font rendering capabilities"""
     try:
@@ -875,7 +934,7 @@ def get_system_font():
     else:  # Linux and others
         return "Sans"  # Generic sans-serif
 
-def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, ultra_simple_video=False):
+def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, youtube_shorts_mode=False, ultra_simple_video=False):
     """Create a shorts clip with proper 9:16 format and working subtitles"""
     try:
         st.write(f"🎬 Creating clip {clip_index+1} with {len(moment['subtitles'])} subtitles...")
@@ -994,117 +1053,99 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
         
         # Add subtitles using drawtext
         if clip_subtitles and enable_subtitles:
-            for i, subtitle in enumerate(clip_subtitles):
-                escaped_text = escape_text_for_ffmpeg(subtitle['text'], ascii_only)
+            if youtube_shorts_mode:
+                # Use YouTube Shorts optimized word-by-word subtitles
+                word_subtitles = create_word_by_word_subtitles(clip_subtitles, width, height, ascii_only, simple_mode)
+                st.info(f"🎬 YouTube Shorts mode: Created {len(word_subtitles)} word-by-word subtitle segments")
                 
-                # Skip empty subtitles
-                if not escaped_text or escaped_text == "Sample Text":
-                    continue
+                # Process word-by-word subtitles
+                for i, word_sub in enumerate(word_subtitles):
+                    escaped_text = word_sub['text']
+                    
+                    # Skip empty subtitles
+                    if not escaped_text or escaped_text == "Sample Text":
+                        continue
+                    
+                    font_size = word_sub['font_size']
+                    color = word_sub['color']
+                    y_pos = word_sub['y_position']
                 
-                # Font size based on resolution
-                font_size = int(height * 0.045)  # 4.5% of height
+                    # YouTube Shorts mode: Simple, bright, centered subtitles
+                    try:
+                        # Build drawtext filter optimized for mobile viewing
+                        drawtext_params = [
+                            f"text='{escaped_text}'",
+                            f"fontsize={font_size}",
+                            f"fontcolor={color}",
+                            "x=(w-text_w)/2",  # Center horizontally
+                            f"y={y_pos}",      # Position at bottom
+                            "box=1",           # Always use box for readability
+                            "boxcolor=black@0.7",  # Semi-transparent black background
+                            "boxborderw=8",    # Thick border for mobile
+                            f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
+                        ]
+                        
+                        # Join all parameters
+                        drawtext_filter = f"[{base_label}]drawtext=" + ":".join(drawtext_params) + f"[word{i}]"
+                        filter_complex += ";" + drawtext_filter
+                        base_label = f"word{i}"
+                        
+                    except Exception as word_error:
+                        st.warning(f"⚠️ Could not add word subtitle {i+1}: {word_error}")
+                        continue
+                        
+            else:
+                # Traditional subtitle mode (full sentences)
+                st.info(f"📝 Traditional mode: Processing {len(clip_subtitles)} full subtitle sentences")
                 
-                # Try to create subtitle with different approaches for maximum compatibility
-                subtitle_added = False
-                
-                # Approach 1: Try with system font
-                system = platform.system()
-                font_paths = []
-                if system == "Darwin":  # macOS
-                    font_paths = ["/Library/Fonts/Arial.ttf", "/System/Library/Fonts/Helvetica.ttc"]
-                elif system == "Windows":
-                    font_paths = ["C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/calibri.ttf"]
-                else:  # Linux
-                    font_paths = [
-                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-                    ]
-                
-                # Find first available font
-                font_file = None
-                for path in font_paths:
-                    if os.path.exists(path):
-                        font_file = path
-                        break
-                
-                try:
-                    # Build drawtext filter - choose between simple and advanced mode
-                    if simple_mode:
-                        # Ultra-simple mode for maximum compatibility
+                for i, subtitle in enumerate(clip_subtitles):
+                    escaped_text = escape_text_for_ffmpeg(subtitle['text'], ascii_only)
+                    
+                    # Skip empty subtitles
+                    if not escaped_text or escaped_text == "Sample Text":
+                        continue
+                    
+                    # Font size based on resolution
+                    font_size = int(height * 0.045)  # 4.5% of height
+                    
+                    try:
+                        # Build drawtext filter - simple mode for better compatibility
                         drawtext_params = [
                             f"text='{escaped_text}'",
                             f"fontsize={font_size}",
                             "fontcolor=white",
                             "x=(w-text_w)/2",
                             f"y=h-{int(height*0.15)}",
-                            f"enable='between(t,{subtitle['start']:.1f},{subtitle['end']:.1f})'"
-                        ]
-                    else:
-                        # Standard mode with styling
-                        drawtext_params = []
-                        drawtext_params.append(f"text='{escaped_text}'")
-                        drawtext_params.append(f"fontsize={font_size}")
-                        
-                        # Add font file if available and not in simple mode
-                        if font_file:
-                            drawtext_params.append(f"fontfile='{font_file}'")
-                        
-                        drawtext_params.append("fontcolor=white")
-                        drawtext_params.append("x=(w-text_w)/2")
-                        drawtext_params.append(f"y=h-{int(height*0.15)}")
-                        
-                        # Add style parameters
-                        if subtitle_style == "box":
-                            drawtext_params.extend([
-                                "box=1",
-                                "boxcolor=black@0.8",
-                                "boxborderw=5"
-                            ])
-                        elif subtitle_style == "shadow":
-                            drawtext_params.extend([
-                                "shadowcolor=black",
-                                "shadowx=2",
-                                "shadowy=2"
-                            ])
-                        else:  # outline
-                            drawtext_params.extend([
-                                "bordercolor=black",
-                                "borderw=3"
-                            ])
-                        
-                        # Add timing
-                        start_time = f"{subtitle['start']:.2f}"
-                        end_time = f"{subtitle['end']:.2f}"
-                        drawtext_params.append(f"enable='between(t,{start_time},{end_time})'")
-                    
-                    # Join all parameters
-                    drawtext_filter = f"[{base_label}]drawtext=" + ":".join(drawtext_params) + f"[sub{i}]"
-                    
-                    filter_complex += ";" + drawtext_filter
-                    base_label = f"sub{i}"
-                    subtitle_added = True
-                    
-                except Exception as subtitle_error:
-                    st.warning(f"⚠️ Subtitle rendering issue for clip {clip_index+1}, subtitle {i+1}: {subtitle_error}")
-                    # Try simplified version without font file
-                    try:
-                        simple_params = [
-                            f"text='{escaped_text}'",
-                            f"fontsize={font_size}",
-                            "fontcolor=white",
-                            "x=(w-text_w)/2",
-                            f"y=h-{int(height*0.15)}",
-                            f"enable='between(t,{start_time},{end_time})'"
+                            f"enable='between(t,{subtitle['start']:.2f},{subtitle['end']:.2f})'"
                         ]
                         
-                        drawtext_filter = f"[{base_label}]drawtext=" + ":".join(simple_params) + f"[sub{i}]"
+                        # Add style parameters if not in simple mode
+                        if not simple_mode:
+                            if subtitle_style == "box":
+                                drawtext_params.extend([
+                                    "box=1",
+                                    "boxcolor=black@0.8",
+                                    "boxborderw=5"
+                                ])
+                            elif subtitle_style == "shadow":
+                                drawtext_params.extend([
+                                    "shadowcolor=black",
+                                    "shadowx=2",
+                                    "shadowy=2"
+                                ])
+                            else:  # outline
+                                drawtext_params.extend([
+                                    "bordercolor=black",
+                                    "borderw=3"
+                                ])
+                        
+                        # Join all parameters
+                        drawtext_filter = f"[{base_label}]drawtext=" + ":".join(drawtext_params) + f"[sub{i}]"
                         filter_complex += ";" + drawtext_filter
                         base_label = f"sub{i}"
-                        subtitle_added = True
-                        st.info(f"✅ Used simplified subtitle rendering for subtitle {i+1}")
                         
-                    except Exception as simple_error:
-                        st.warning(f"⚠️ Could not add subtitle {i+1}: {simple_error}")
+                    except Exception as subtitle_error:
+                        st.warning(f"⚠️ Could not add subtitle {i+1}: {subtitle_error}")
                         continue
                 
         elif not enable_subtitles:
@@ -1322,8 +1363,8 @@ if 'smart_crop_region' not in st.session_state:
     st.session_state.smart_crop_region = None
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - FILTER ERROR FIX")
-st.write("✅ **Automatic error recovery + Ultra-simple processing + Stable generation**")
+st.title("🎬 YouTube Shorts Generator - MOBILE OPTIMIZED")
+st.write("✅ **Word-by-word subtitles + Multiple colors + Mobile-first design**")
 
 # Check FFmpeg availability
 ffmpeg_available, ffmpeg_message = check_ffmpeg_availability()
@@ -1334,15 +1375,15 @@ if not ffmpeg_available:
 
 # Quality info
 st.info("""
-🚀 **FFmpeg Filter Error Fix:**
-- 🔄 **Automatic Recovery**: Tries simpler approaches if initial processing fails
-- 🔧 **Ultra-Simple Mode**: Emergency fallback for maximum compatibility
-- 📐 **Robust Filter Construction**: Fixed aspect ratio calculations and syntax errors
-- 🛡️ **Error Validation**: Comprehensive error handling with progressive fallbacks
-- 🎨 **Multiple Subtitle Styles**: Box, shadow, or outline styles (when enabled)
+🚀 **YouTube Shorts Optimized Features:**
+- 📱 **Mobile-First Subtitles**: Word-by-word display (1-2 words, 0.5-0.8s each)
+- 🌈 **Multiple Colors**: Cycling bright colors (yellow, cyan, lime, magenta, orange)
+- 📐 **Perfect Positioning**: Bottom 18% of screen, centered, large readable font
+- 🔄 **Automatic Recovery**: Robust error handling with progressive fallbacks
+- 🎨 **Dual Modes**: YouTube Shorts optimized OR traditional full sentences
 - 👤 **Smart Cropping**: Face detection keeps speakers in frame
 - 📥 **Stable Downloads**: Persistent download buttons
-- 🧪 **Debug Output**: Saves all commands and errors for troubleshooting
+- 🧪 **Debug Output**: Comprehensive troubleshooting information
 """)
 
 # Settings
@@ -1424,6 +1465,12 @@ if enable_subtitles:
         help="Use basic subtitle rendering without advanced styling (fallback for compatibility issues)"
     )
     
+    youtube_shorts_mode = st.sidebar.checkbox(
+        "YouTube Shorts optimized subtitles",
+        value=True,
+        help="Word-by-word display with multiple colors, optimized for mobile viewing"
+    )
+    
     # Show current system info
     import platform
     system = platform.system()
@@ -1435,6 +1482,7 @@ else:
     subtitle_style = "box"  # Default value when disabled
     ascii_only = True
     simple_mode = False  # Default value when disabled
+    youtube_shorts_mode = False  # Default value when disabled
     st.sidebar.warning("⚠️ Subtitles disabled")
 
 # Ultra-simple video processing option (always available)
@@ -1505,6 +1553,8 @@ if 'ascii_only' not in locals():
     ascii_only = True
 if 'simple_mode' not in locals():
     simple_mode = False
+if 'youtube_shorts_mode' not in locals():
+    youtube_shorts_mode = False
 if 'ultra_simple_video' not in locals():
     ultra_simple_video = False
 if 'force_auto_captions' not in locals():
@@ -1652,7 +1702,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
             
             clip = create_shorts_clip(
                 video_path, moment, background_style, visual_preset, motion_effects, 
-                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, ultra_simple_video
+                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video
             )
             
             if clip:
