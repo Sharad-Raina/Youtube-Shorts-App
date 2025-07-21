@@ -1213,7 +1213,7 @@ def find_top_viral_candidates(subtitles, num_candidates=20):
         # Calculate viral score
         score = calculate_comprehensive_viral_score(window_subs)
         
-        if score['total'] > 50:  # Minimum threshold
+        if score['total'] > 30:  # Lower threshold for more candidates
             all_candidates.append({
                 'start_time': window_start,
                 'end_time': window_start + 30,
@@ -1229,9 +1229,10 @@ def find_top_viral_candidates(subtitles, num_candidates=20):
     return all_candidates[:num_candidates]
 
 def calculate_comprehensive_viral_score(subtitles):
-    """Calculate detailed viral score with multiple factors"""
+    """Calculate detailed viral score with multiple factors - ENHANCED"""
     
     text = ' '.join([s['text'] for s in subtitles])
+    text_lower = text.lower()
     scores = {
         'numbers': 0,
         'emotion': 0,
@@ -1240,66 +1241,118 @@ def calculate_comprehensive_viral_score(subtitles):
         'specificity': 0
     }
     
-    # 1. Big numbers or money
-    big_numbers = re.findall(r'\$\d+[KMB]?|\d+\s*(?:million|billion|thousand)', text)
-    scores['numbers'] = len(big_numbers) * 15
+    # 1. ENHANCED Numbers and money detection
+    money_patterns = [
+        r'\$\d+[KMB]?', r'\d+\s*(?:million|billion|thousand|dollars)',
+        r'\d+[KMB]\+?', r'\d{4,}', r'worth.*\d+', r'made.*\d+', r'earned.*\d+'
+    ]
+    numbers_found = 0
+    for pattern in money_patterns:
+        numbers_found += len(re.findall(pattern, text_lower))
+    scores['numbers'] = min(numbers_found * 20, 80)  # Cap at 80
     
-    # 2. Emotional intensity
-    scores['emotion'] = (
+    # 2. ENHANCED Emotional intensity
+    emotion_words = [
+        'amazing', 'incredible', 'unbelievable', 'shocking', 'crazy', 'insane',
+        'love', 'hate', 'angry', 'excited', 'devastated', 'thrilled'
+    ]
+    emotion_score = (
         text.count('!') * 5 +
         text.count('?') * 3 +
-        len([w for w in text.split() if w.isupper() and len(w) > 2]) * 4
+        len([w for w in text.split() if w.isupper() and len(w) > 2]) * 4 +
+        sum(5 for word in emotion_words if word in text_lower)
     )
+    scores['emotion'] = min(emotion_score, 60)  # Cap at 60
     
-    # 3. Story indicators
-    story_words = ['then', 'suddenly', 'turned out', 'realized', 'discovered']
-    scores['story'] = sum(10 for word in story_words if word in text.lower())
+    # 3. ENHANCED Story and climax indicators
+    story_patterns = [
+        'then', 'suddenly', 'turned out', 'realized', 'discovered', 'found out',
+        'happened next', 'what happened was', 'the crazy part', 'get this',
+        'you won\'t believe', 'wait for it', 'plot twist'
+    ]
+    scores['story'] = sum(12 for word in story_patterns if word in text_lower)
     
-    # 4. Surprise/twist elements
-    surprise_words = ['but', 'however', 'actually', 'truth', 'never expected']
-    scores['surprise'] = sum(8 for word in surprise_words if word in text.lower())
+    # 4. ENHANCED Surprise and twist elements
+    surprise_patterns = [
+        'but', 'however', 'actually', 'truth is', 'never expected', 'shocking',
+        'twist', 'surprise', 'didn\'t see coming', 'plot twist', 'turns out',
+        'little did', 'secret', 'hidden', 'revealed'
+    ]
+    scores['surprise'] = sum(10 for word in surprise_patterns if word in text_lower)
     
-    # 5. Specific names/brands (not generic)
+    # 5. ENHANCED Specificity (names, brands, places)
     proper_nouns = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', text)
-    scores['specificity'] = min(len(proper_nouns) * 5, 25)
+    # Filter out common words that get capitalized
+    common_words = {'He', 'She', 'They', 'I', 'You', 'We', 'The', 'This', 'That'}
+    proper_nouns = [noun for noun in proper_nouns if noun not in common_words]
+    scores['specificity'] = min(len(proper_nouns) * 8, 40)  # Cap at 40
+    
+    # 6. BONUS: Viral keywords (new category)
+    viral_keywords = [
+        'viral', 'trending', 'famous', 'celebrity', 'rich', 'wealthy',
+        'exposed', 'truth', 'scandal', 'secret', 'hack', 'trick'
+    ]
+    bonus_score = sum(15 for word in viral_keywords if word in text_lower)
+    scores['bonus'] = min(bonus_score, 45)
     
     scores['total'] = sum(scores.values())
     return scores
 
 def generate_viral_question(subtitles):
-    """Generate engaging question based on content"""
+    """Generate engaging question based on content - ALWAYS returns a question"""
     
-    text = ' '.join([s['text'] for s in subtitles])
+    text = ' '.join([s['text'] for s in subtitles]).lower()
     
     # Extract key elements
-    numbers = re.findall(r'\$?\d+[KMB]?', text)
-    names = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', text)
+    numbers = re.findall(r'\$?\d+[KMB]?|million|billion|thousand', text)
+    names = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', ' '.join([s['text'] for s in subtitles]))
     
     # Look for key patterns and generate appropriate question
-    if 'million' in text or 'billion' in text:
-        amount = numbers[0] if numbers else "millions"
-        return f"How did this lead to {amount}? 💰"
+    if any(word in text for word in ['million', 'billion', 'thousand', '$']) or numbers:
+        if numbers:
+            amount = numbers[0]
+            return f"How did this make {amount}? 💰"
+        else:
+            return "How much money was involved? 💰"
     
-    elif 'never' in text and 'expected' in text:
+    elif any(word in text for word in ['never expected', 'surprised', 'shocked', 'couldn\'t believe']):
         return "What nobody saw coming... 😱"
     
-    elif 'mistake' in text.lower():
+    elif any(word in text for word in ['mistake', 'wrong', 'failed', 'error']):
         return "The mistake that changed everything 🤯"
     
-    elif 'met' in text and names:
-        return f"When {names[0]} changed the game 🎯"
+    elif any(word in text for word in ['secret', 'hidden', 'revealed', 'truth']):
+        return "The secret nobody knows... 🤫"
     
-    elif '?' in text:
-        # Extract the most interesting question from the content
-        questions = re.findall(r'[^.!?]*\?', text)
-        if questions:
-            return questions[0].strip()
+    elif any(word in text for word in ['crazy', 'insane', 'unbelievable', 'amazing']):
+        return "Why this went viral... 🔥"
     
-    # Default engaging questions
-    elif 'how' in text.lower():
-        return "Here's how it really works... 🔍"
+    elif names and len(names) > 0:
+        return f"What {names[0]} discovered... 🎯"
+    
+    elif any(word in text for word in ['how', 'why', 'what', 'when', 'where']):
+        return "Here's what really happened... 🔍"
+    
+    elif any(word in text for word in ['love', 'hate', 'angry', 'happy', 'sad']):
+        return "The emotional truth... 💔"
+    
+    elif any(word in text for word in ['business', 'company', 'startup', 'entrepreneur']):
+        return "The business secret... 📊"
+    
+    elif any(word in text for word in ['life', 'changed', 'transformation']):
+        return "How this changed everything... ⚡"
+    
+    # Always return SOMETHING - never fail
     else:
-        return "Why this matters to you 👇"
+        fallback_questions = [
+            "Why this matters to you... 👇",
+            "The truth revealed... 🎬",
+            "What happens next... ⚡",
+            "The real story... 📖", 
+            "Why everyone's talking about this... 💬"
+        ]
+        # Use the length of text to pick consistently 
+        return fallback_questions[len(text) % len(fallback_questions)]
 
 def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
     """Find potential viral moments in subtitles"""
@@ -1352,7 +1405,8 @@ def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
                         'duration': duration,
                         'score': score,
                         'trigger_text': subtitle['text'],
-                        'subtitles': clip_subtitles
+                        'subtitles': clip_subtitles,
+                        'viral_question': generate_viral_question(clip_subtitles)  # ADD VIRAL QUESTION
                     })
     
     moments = sorted(moments, key=lambda x: x['score'], reverse=True)
@@ -2085,35 +2139,35 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                 f.write(filter_complex)
             st.info(f"💾 Filter debug file saved: {os.path.basename(filter_debug_file)}")
         
-        # Add viral question overlay for first few seconds
-        if add_viral_question and 'viral_question' in moment:
-            question = moment['viral_question']
+        # Add viral question overlay for first few seconds - NOW MANDATORY FOR ALL CLIPS
+        if add_viral_question:
+            question = moment.get('viral_question', generate_viral_question(moment['subtitles']) if moment['subtitles'] else "What's happening here... 🎬")
             
-            # Style settings based on question_style
+            # Style settings based on question_style - ENHANCED FOR MOBILE VISIBILITY
             if question_style == "Bold with background":
-                fontsize = int(height * 0.09)
+                fontsize = int(height * 0.12)  # BIGGER
+                fontcolor = "white"
+                borderw = 4
+                bordercolor = "black"
+                box = 1
+                boxcolor = "black@0.8"
+                boxborderw = 15
+            elif question_style == "Clean minimal":
+                fontsize = int(height * 0.10)  # BIGGER
                 fontcolor = "white"
                 borderw = 3
                 bordercolor = "black"
                 box = 1
-                boxcolor = "black@0.7"
-                boxborderw = 10
-            elif question_style == "Clean minimal":
-                fontsize = int(height * 0.07)
-                fontcolor = "white"
-                borderw = 2
-                bordercolor = "black"
-                box = 0
-                boxcolor = "transparent"
-                boxborderw = 0
-            else:  # Attention-grabbing
-                fontsize = int(height * 0.11)
+                boxcolor = "black@0.5"
+                boxborderw = 8
+            else:  # Attention-grabbing - DEFAULT
+                fontsize = int(height * 0.14)  # BIGGEST
                 fontcolor = "#FFD700"  # Bright yellow
-                borderw = 4
+                borderw = 5
                 bordercolor = "red"
                 box = 1
-                boxcolor = "red@0.8"
-                boxborderw = 12
+                boxcolor = "red@0.9"
+                boxborderw = 18
             
             # Create question overlay filter
             question_filter = f"""drawtext=text='{escape_text_for_ffmpeg(question)}':fontsize={fontsize}:fontcolor={fontcolor}:borderw={borderw}:bordercolor={bordercolor}:box={box}:boxcolor={boxcolor}:boxborderw={boxborderw}:x=(w-text_w)/2:y={int(height * 0.15)}:enable='between(t,0,{question_duration})'"""
@@ -2336,18 +2390,19 @@ if 'start_processing' not in st.session_state:
     st.session_state.start_processing = False
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - VIRAL SELECTION")
-st.write("✅ **Top 20 viral candidates + Manual selection + Viral questions + Multi-speaker detection**")
+st.title("🎬 YouTube Shorts Generator - VIRAL QUESTIONS")
+st.write("✅ **EVERY clip gets viral questions + Enhanced detection + Multi-speaker support**")
 
-# New workflow info
+# Enhanced features info
 st.info("""
-🎯 **NEW WORKFLOW:**
-1. **Enter YouTube URL** → Download video & subtitles
-2. **Click "Find Viral Moments"** → Get top 20 candidates with scores
-3. **Review & Select** → Choose which clips to create (with previews & viral questions)
-4. **Click "Create Selected Clips"** → Only creates the clips you want!
+🎯 **ENHANCED FEATURES:**
+- 🔥 **BIG Viral Questions**: Every clip starts with a massive, visible question for 3 seconds
+- 🧠 **Smart Detection**: Scans entire podcast for numbers, emotions, surprises, story climaxes
+- 📊 **Better Scoring**: Numbers/money, emotional peaks, story elements, viral keywords
+- 🎭 **Multi-Speaker Fix**: Includes ALL speakers in frame using bounding box detection
+- 📱 **Mobile Optimized**: Extra large text, bold colors, perfect for mobile viewing
 
-**Benefits:** No wasted processing time, better clip quality, viral questions for engagement!
+**Result:** Every clip is engaging and grabs attention from the first second!
 """)
 
 # IMPORTANT WARNING
@@ -2496,8 +2551,8 @@ num_candidates = st.sidebar.slider(
 )
 
 min_score_threshold = st.sidebar.slider(
-    "Minimum score threshold",
-    30, 100, 50,
+    "Minimum score threshold", 
+    20, 100, 35,
     help="Higher = fewer but better candidates"
 )
 
@@ -2826,7 +2881,9 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                             st.metric("Surprise", scores['surprise'])
                         with col3:
                             st.metric("Specificity", scores['specificity'])
-                            st.metric("**TOTAL**", scores['total'])
+                            st.metric("Viral Keywords", scores.get('bonus', 0))
+                        
+                        st.metric("**🔥 TOTAL SCORE**", scores['total'])
                         
                         # Show preview text
                         st.write("**Preview:**")
@@ -2889,7 +2946,8 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                             'duration': end - start,
                             'score': 1,
                             'trigger_text': f'Clip {i+1}',
-                            'subtitles': clip_subs
+                            'subtitles': clip_subs,
+                            'viral_question': generate_viral_question(clip_subs) if clip_subs else "What's the story here... 🎬"  # ADD VIRAL QUESTION
                         })
                 
                 st.info(f"🎯 Creating {len(moments[:max_clips])} clips...")
