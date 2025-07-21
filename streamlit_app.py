@@ -115,8 +115,8 @@ def download_video_and_subtitles(url, temp_dir, force_auto_captions=True, accept
         # Now download video with the specific subtitle language
         # Choose format based on burned caption preferences
         if avoid_burned_captions:
-            # Prefer formats without hardcoded subtitles
-            video_format = 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best[ext=mp4]/best'
+            # Prefer formats without hardcoded subtitles - avoid auto-generated caption streams
+            video_format = 'bestvideo[ext=mp4][height<=1080][acodec!=none]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best[ext=mp4]/best'
         else:
             video_format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
             
@@ -132,6 +132,7 @@ def download_video_and_subtitles(url, temp_dir, force_auto_captions=True, accept
             download_opts.update({
                 'writesubtitles': True,
                 'writeautomaticsub': True,
+                'embedsubtitles': False,  # CRITICAL: Don't embed subtitles in video
                 'subtitleslangs': [subtitle_lang],
                 'subtitlesformat': 'srt/vtt/srv3/srv2/srv1/json3/best',
                 'postprocessors': [{
@@ -532,11 +533,13 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
             cap.release()
             return None
         
-        # Sample frames throughout the video
+        # Sample frames throughout the video (30 frames for better coverage)
+        sample_frames = 30
         frame_indices = np.linspace(0, total_frames - 1, sample_frames, dtype=int)
         
         all_subject_centers = []
-        subject_stats = {'face': 0, 'profile': 0, 'body': 0, 'object': 0}
+        subject_stats = {'face': 0, 'profile': 0, 'body': 0, 'object': 0, 'motion': 0}
+        frame_subjects = []  # Store subjects per frame for analysis
         
         for idx in frame_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -545,6 +548,7 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 continue
             
             subjects = detect_subjects_in_frame(frame)
+            frame_subjects.append(subjects)
             
             # Calculate subject centers with weighted importance
             for subject in subjects:
@@ -557,7 +561,48 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 all_subject_centers.append(weighted_center)
                 subject_stats[subject_type] += 1
         
-        cap.release()
+        # If no subjects found with standard detection, try motion-based detection
+        if not all_subject_centers:
+            st.info("🔍 No subjects detected with standard methods, trying motion detection...")
+            
+            # Sample fewer frames for motion detection (computationally expensive)
+            motion_frame_indices = np.linspace(0, total_frames - 1, 10, dtype=int)
+            prev_frame = None
+            
+            for idx in motion_frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                
+                if prev_frame is not None:
+                    # Calculate optical flow to detect motion
+                    flow = cv2.calcOpticalFlowPyrLK(prev_frame, gray, None, None)
+                    
+                    # Detect areas with significant motion
+                    diff = cv2.absdiff(prev_frame, gray)
+                    _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+                    
+                    # Find contours of moving areas
+                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    for contour in contours:
+                        area = cv2.contourArea(contour)
+                        if area > 5000:  # Significant movement area
+                            x, y, w, h = cv2.boundingRect(contour)
+                            center_x = x + w // 2
+                            center_y = y + h // 2
+                            
+                            all_subject_centers.append((center_x, center_y, 0.4, 'motion'))
+                            subject_stats['motion'] += 1
+                
+                prev_frame = gray
+            
+            cap.release()  # Release after motion detection
+        else:
+            cap.release()  # Release after standard detection
         
         # Calculate optimal crop with enhanced subject detection
         if all_subject_centers:
@@ -577,6 +622,10 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 if count > 0:
                     detection_info.append(f"{count} {s_type}(s)")
             detection_summary = ", ".join(detection_info) if detection_info else "subjects"
+            
+            # Add centering status message
+            st.success(f"✅ Subject detected - auto-centering enabled")
+            st.info(f"🎯 Found: {detection_summary} (confidence: {total_weight/len(all_subject_centers):.2f})")
             
             # Calculate crop dimensions
             if current_aspect > target_aspect:
@@ -1063,6 +1112,92 @@ def create_word_by_word_subtitles(clip_subtitles, width, height, ascii_only=True
             word_subtitles[i-1]['end'] = curr_start - 0.1  # 0.1 second gap
     
     return word_subtitles
+
+def test_auto_crop_preview(video_path):
+    """Test and preview auto-crop detection on the video"""
+    try:
+        st.write("🎯 **Auto-Crop Preview Test**")
+        
+        # Get sample frame from middle of video
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        middle_frame = total_frames // 2
+        
+        cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame)
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret:
+            st.error("❌ Could not read video frame for preview")
+            return
+        
+        original_height, original_width = frame.shape[:2]
+        
+        # Test crop region detection
+        with st.spinner("🔍 Analyzing video for optimal crop region..."):
+            crop_region = get_optimal_crop_region(video_path, 1080, 1920)
+        
+        if crop_region and crop_region['has_subjects']:
+            st.success(f"✅ Subject detected - auto-centering enabled")
+            st.info(f"📊 Detection: {crop_region['detection_summary']}")
+            st.info(f"🎯 Confidence: {crop_region['confidence_score']:.2f}")
+            
+            # Create preview images
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Original Video Frame:**")
+                # Resize for display
+                display_frame = cv2.resize(frame, (300, int(300 * original_height / original_width)))
+                display_frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+                st.image(display_frame_rgb, caption="Original video")
+            
+            with col2:
+                st.write("**Auto-Crop Preview:**")
+                # Apply crop
+                x, y, w, h = crop_region['x'], crop_region['y'], crop_region['width'], crop_region['height']
+                cropped_frame = frame[y:y+h, x:x+w]
+                
+                # Resize to 9:16 aspect ratio for preview
+                target_height = 400
+                target_width = int(target_height * 9 / 16)
+                cropped_resized = cv2.resize(cropped_frame, (target_width, target_height))
+                cropped_rgb = cv2.cvtColor(cropped_resized, cv2.COLOR_BGR2RGB)
+                st.image(cropped_rgb, caption="Auto-cropped result")
+            
+            # Show crop details
+            st.write("**Crop Details:**")
+            st.write(f"• Crop region: {w}x{h} pixels at ({x}, {y})")
+            st.write(f"• Original size: {original_width}x{original_height}")
+            st.write(f"• Crop percentage: {(w*h)/(original_width*original_height)*100:.1f}% of original")
+            
+        else:
+            st.warning("⚠️ No subjects detected - will use center crop")
+            st.info("💡 This video will use standard center cropping")
+            
+            # Show center crop preview
+            center_crop_w = int(original_height * 9 / 16)
+            center_crop_x = (original_width - center_crop_w) // 2
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Original Video Frame:**")
+                display_frame = cv2.resize(frame, (300, int(300 * original_height / original_width)))
+                display_frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+                st.image(display_frame_rgb, caption="Original video")
+            
+            with col2:
+                st.write("**Center Crop Preview:**")
+                center_cropped = frame[:, center_crop_x:center_crop_x+center_crop_w]
+                target_height = 400
+                target_width = int(target_height * 9 / 16)
+                center_resized = cv2.resize(center_cropped, (target_width, target_height))
+                center_rgb = cv2.cvtColor(center_resized, cv2.COLOR_BGR2RGB)
+                st.image(center_rgb, caption="Center-cropped result")
+                
+    except Exception as e:
+        st.error(f"❌ Error during auto-crop preview: {e}")
 
 def test_font_rendering():
     """Test FFmpeg font rendering capabilities"""
@@ -1674,6 +1809,16 @@ if 'smart_crop_region' not in st.session_state:
 st.title("🎬 YouTube Shorts Generator - VIRAL OPTIMIZED")
 st.write("✅ **Smart cropping + Viral hooks + Sequential subtitles + No double captions**")
 
+# IMPORTANT WARNING
+st.error("""
+⚠️ **IMPORTANT: To avoid double subtitles:**
+1. **Turn OFF the CC (Closed Captions) button on YouTube BEFORE copying the URL**
+2. Make sure no captions are showing on the YouTube video
+3. Then copy the URL and paste it below
+
+This prevents YouTube's burned-in captions from appearing with our custom subtitles.
+""")
+
 # Check FFmpeg availability
 ffmpeg_available, ffmpeg_message = check_ffmpeg_availability()
 if not ffmpeg_available:
@@ -1869,6 +2014,13 @@ with st.expander("🔧 Advanced Options"):
     if st.button("🔤 Test Font Rendering"):
         test_font_rendering()
     
+    st.write("**Auto-Crop Testing:**")
+    if st.button("🎯 Test Auto-Crop Preview"):
+        if 'video_path' in st.session_state and st.session_state.video_path:
+            test_auto_crop_preview(st.session_state.video_path)
+        else:
+            st.warning("⚠️ Please download a video first to test auto-crop")
+    
     st.write("**Troubleshooting:**")
     use_cookies = st.checkbox(
         "🍪 Use cookies for restricted videos",
@@ -1972,6 +2124,9 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
         
         st.success(f"✅ Downloaded: {title}")
         
+        # Store video path in session state for testing features
+        st.session_state.video_path = video_path
+        
         # Analyze video for smart cropping if enabled
         smart_crop_region = None
         if use_smart_crop:
@@ -1986,7 +2141,8 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                 
                 smart_crop_region = get_optimal_crop_region(video_path, width, height)
                 if smart_crop_region and smart_crop_region['has_subjects']:
-                    st.success(f"✅ Subject detection successful - {smart_crop_region['detection_summary']} (confidence: {smart_crop_region['confidence_score']:.2f})")
+                    st.success(f"✅ Subject detected - auto-centering enabled")
+                    st.info(f"🎯 Detection: {smart_crop_region['detection_summary']} (confidence: {smart_crop_region['confidence_score']:.2f})")
                 else:
                     st.info("ℹ️ No subjects detected - using standard center crop")
                 
