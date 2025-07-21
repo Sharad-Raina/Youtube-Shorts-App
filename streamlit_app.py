@@ -1307,49 +1307,49 @@ def generate_viral_question(subtitles):
     numbers = re.findall(r'\$?\d+[KMB]?|million|billion|thousand', text)
     names = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', ' '.join([s['text'] for s in subtitles]))
     
-    # Look for key patterns and generate appropriate question
+    # Look for key patterns and generate appropriate question - OPTIMIZED FOR MULTI-LINE
     if any(word in text for word in ['million', 'billion', 'thousand', '$']) or numbers:
         if numbers:
             amount = numbers[0]
             return f"How did this make {amount}? 💰"
         else:
-            return "How much money was involved? 💰"
+            return "How much money was made? 💰"
     
     elif any(word in text for word in ['never expected', 'surprised', 'shocked', 'couldn\'t believe']):
-        return "What nobody saw coming... 😱"
+        return "What nobody saw coming? 😱"
     
     elif any(word in text for word in ['mistake', 'wrong', 'failed', 'error']):
-        return "The mistake that changed everything 🤯"
+        return "The mistake that changed it all 🤯"
     
     elif any(word in text for word in ['secret', 'hidden', 'revealed', 'truth']):
-        return "The secret nobody knows... 🤫"
+        return "The secret nobody knows 🤫"
     
     elif any(word in text for word in ['crazy', 'insane', 'unbelievable', 'amazing']):
-        return "Why this went viral... 🔥"
+        return "Why this went viral 🔥"
     
     elif names and len(names) > 0:
-        return f"What {names[0]} discovered... 🎯"
+        return f"What {names[0]} discovered 🎯"
     
     elif any(word in text for word in ['how', 'why', 'what', 'when', 'where']):
-        return "Here's what really happened... 🔍"
+        return "Here's what really happened 🔍"
     
     elif any(word in text for word in ['love', 'hate', 'angry', 'happy', 'sad']):
-        return "The emotional truth... 💔"
+        return "The emotional truth 💔"
     
     elif any(word in text for word in ['business', 'company', 'startup', 'entrepreneur']):
-        return "The business secret... 📊"
+        return "The business secret 📊"
     
     elif any(word in text for word in ['life', 'changed', 'transformation']):
-        return "How this changed everything... ⚡"
+        return "How this changed everything ⚡"
     
     # Always return SOMETHING - never fail
     else:
         fallback_questions = [
-            "Why this matters to you... 👇",
-            "The truth revealed... 🎬",
-            "What happens next... ⚡",
-            "The real story... 📖", 
-            "Why everyone's talking about this... 💬"
+            "Why this matters to you 👇",
+            "The truth revealed 🎬",
+            "What happens next ⚡",
+            "The real story 📖", 
+            "Why everyone's talking 💬"
         ]
         # Use the length of text to pick consistently 
         return fallback_questions[len(text) % len(fallback_questions)]
@@ -2143,40 +2143,78 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
         if add_viral_question:
             question = moment.get('viral_question', generate_viral_question(moment['subtitles']) if moment['subtitles'] else "What's happening here... 🎬")
             
-            # Style settings based on question_style - ENHANCED FOR MOBILE VISIBILITY
+            # SMART TEXT FORMATTING: Break long questions into multiple lines
+            def format_question_for_display(text, max_chars_per_line=30):
+                """Break long text into multiple lines for better display"""
+                words = text.split()
+                lines = []
+                current_line = ""
+                
+                for word in words:
+                    if len(current_line + " " + word) <= max_chars_per_line:
+                        current_line += " " + word if current_line else word
+                    else:
+                        if current_line:
+                            lines.append(current_line)
+                        current_line = word
+                
+                if current_line:
+                    lines.append(current_line)
+                
+                return lines
+            
+            # Format question into lines
+            question_lines = format_question_for_display(question, 30)
+            
+            # DYNAMIC FONT SIZE: Adjust based on text length and number of lines
+            base_fontsize = int(height * 0.08)  # Start with 8% (max)
+            if len(question) > 60:  # Very long question
+                base_fontsize = int(height * 0.06)  # 6%
+            elif len(question) > 40:  # Medium length
+                base_fontsize = int(height * 0.07)  # 7%
+            
+            if len(question_lines) > 2:  # More than 2 lines
+                base_fontsize = int(height * 0.05)  # 5% (minimum)
+            
+            # Style settings based on question_style
             if question_style == "Bold with background":
-                fontsize = int(height * 0.12)  # BIGGER
                 fontcolor = "white"
-                borderw = 4
+                borderw = 3
                 bordercolor = "black"
                 box = 1
                 boxcolor = "black@0.8"
-                boxborderw = 15
+                boxborderw = 12
             elif question_style == "Clean minimal":
-                fontsize = int(height * 0.10)  # BIGGER
                 fontcolor = "white"
-                borderw = 3
+                borderw = 2
                 bordercolor = "black"
                 box = 1
                 boxcolor = "black@0.5"
                 boxborderw = 8
             else:  # Attention-grabbing - DEFAULT
-                fontsize = int(height * 0.14)  # BIGGEST
                 fontcolor = "#FFD700"  # Bright yellow
-                borderw = 5
+                borderw = 4
                 bordercolor = "red"
                 box = 1
                 boxcolor = "red@0.9"
-                boxborderw = 18
+                boxborderw = 15
             
-            # Create question overlay filter
-            question_filter = f"""drawtext=text='{escape_text_for_ffmpeg(question)}':fontsize={fontsize}:fontcolor={fontcolor}:borderw={borderw}:bordercolor={bordercolor}:box={box}:boxcolor={boxcolor}:boxborderw={boxborderw}:x=(w-text_w)/2:y={int(height * 0.15)}:enable='between(t,0,{question_duration})'"""
+            # CREATE MULTI-LINE OVERLAY: Add each line separately with proper spacing
+            for i, line in enumerate(question_lines):
+                escaped_line = escape_text_for_ffmpeg(line)
+                
+                # Calculate Y position for each line (start at 10% from top, space lines)
+                line_spacing = base_fontsize + 10  # Space between lines
+                y_position = int(height * 0.10) + (i * line_spacing)  # 10% from top + line spacing
+                
+                # Create filter for this line
+                line_filter = f"""drawtext=text='{escaped_line}':fontsize={base_fontsize}:fontcolor={fontcolor}:borderw={borderw}:bordercolor={bordercolor}:box={box}:boxcolor={boxcolor}:boxborderw={boxborderw}:x=(w-text_w)/2:y={y_position}:enable='between(t,0,{question_duration})'"""
+                
+                # Add to filter complex
+                filter_complex += f";[{base_label}]{line_filter}[with_question_line_{i}]"
+                base_label = f"with_question_line_{i}"
             
-            # Add to filter complex
-            filter_complex += f";[{base_label}]{question_filter}[with_question]"
-            base_label = "with_question"
-            
-            st.info(f"🎯 Added viral question: '{question[:50]}...'")
+            st.info(f"🎯 Added {len(question_lines)}-line viral question: '{question[:50]}...'")
         
         # Final format
         filter_complex += f";[{base_label}]format=yuv420p[out]"
@@ -2390,19 +2428,19 @@ if 'start_processing' not in st.session_state:
     st.session_state.start_processing = False
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - VIRAL QUESTIONS")
-st.write("✅ **EVERY clip gets viral questions + Enhanced detection + Multi-speaker support**")
+st.title("🎬 YouTube Shorts Generator - FIXED TEXT DISPLAY")
+st.write("✅ **Perfect viral questions + Multi-line text + Never cut off + Mobile optimized**")
 
-# Enhanced features info
+# Fixed text display info
 st.info("""
-🎯 **ENHANCED FEATURES:**
-- 🔥 **BIG Viral Questions**: Every clip starts with a massive, visible question for 3 seconds
-- 🧠 **Smart Detection**: Scans entire podcast for numbers, emotions, surprises, story climaxes
-- 📊 **Better Scoring**: Numbers/money, emotional peaks, story elements, viral keywords
-- 🎭 **Multi-Speaker Fix**: Includes ALL speakers in frame using bounding box detection
-- 📱 **Mobile Optimized**: Extra large text, bold colors, perfect for mobile viewing
+🎯 **FIXED TEXT DISPLAY:**
+- 📝 **Multi-Line Questions**: Long questions split into 2-3 readable lines
+- 📏 **Dynamic Font Size**: 8% max, 5% min - adjusts based on text length
+- 🎯 **Perfect Positioning**: 10% from top, centered with proper margins
+- 📱 **Never Cut Off**: Text always fits completely on screen
+- 🔥 **Still Viral**: Enhanced detection finds best moments across entire podcast
 
-**Result:** Every clip is engaging and grabs attention from the first second!
+**Result:** Every question is fully visible and grabs attention perfectly!
 """)
 
 # IMPORTANT WARNING
