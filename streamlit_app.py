@@ -545,18 +545,45 @@ def detect_subject_position(video_path, sample_frames=30):
                 face_positions.append((center_x, center_y, w * h))  # Include area for weighting
         
         if face_positions:
-            # Calculate weighted average position
-            total_area = sum(area for x, y, area in face_positions)
-            avg_x = sum(x * area for x, y, area in face_positions) / total_area
-            avg_y = sum(y * area for x, y, area in face_positions) / total_area
-            confidence = min(95, 60 + len(face_positions) * 5)  # Higher confidence for more faces
-            cap.release()
-            return {
-                'x': int(avg_x), 'y': int(avg_y), 
-                'confidence': confidence, 
-                'method': 'face_detection',
-                'detections': len(face_positions)
-            }
+            if len(face_positions) == 1:
+                # Single face - center on it
+                x, y, area = face_positions[0]
+                confidence = 95
+                cap.release()
+                return {
+                    'x': int(x), 'y': int(y), 
+                    'confidence': confidence, 
+                    'method': 'face_detection_single',
+                    'detections': len(face_positions)
+                }
+            else:
+                # Multiple faces - create bounding box to include all
+                all_x = [x for x, y, area in face_positions]
+                all_y = [y for y, area in face_positions]
+                
+                # Add padding based on average face size
+                avg_area = sum(area for x, y, area in face_positions) / len(face_positions)
+                padding = int(np.sqrt(avg_area) * 0.3)  # 30% of average face width as padding
+                
+                min_x = min(all_x) - padding
+                max_x = max(all_x) + padding
+                min_y = min(all_y) - padding  
+                max_y = max(all_y) + padding
+                
+                # Calculate center of bounding box that includes all faces
+                center_x = (min_x + max_x) // 2
+                center_y = (min_y + max_y) // 2
+                
+                # Higher confidence for multiple stable detections
+                confidence = min(90, 70 + len(face_positions) * 3)
+                cap.release()
+                return {
+                    'x': int(center_x), 'y': int(center_y), 
+                    'confidence': confidence, 
+                    'method': 'face_detection_multi',
+                    'detections': len(face_positions),
+                    'bounding_box': {'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y}
+                }
         
         # Method 2: Motion Detection
         st.info("🔍 No faces found, trying motion detection...")
@@ -588,18 +615,43 @@ def detect_subject_position(video_path, sample_frames=30):
             prev_frame = gray
         
         if motion_positions:
-            # Calculate weighted average
-            total_area = sum(area for x, y, area in motion_positions)
-            avg_x = sum(x * area for x, y, area in motion_positions) / total_area
-            avg_y = sum(y * area for x, y, area in motion_positions) / total_area
-            confidence = min(80, 40 + len(motion_positions) * 3)
-            cap.release()
-            return {
-                'x': int(avg_x), 'y': int(avg_y), 
-                'confidence': confidence, 
-                'method': 'motion_detection',
-                'detections': len(motion_positions)
-            }
+            if len(motion_positions) == 1:
+                # Single motion area
+                x, y, area = motion_positions[0]
+                confidence = 75
+                cap.release()
+                return {
+                    'x': int(x), 'y': int(y), 
+                    'confidence': confidence, 
+                    'method': 'motion_detection_single',
+                    'detections': len(motion_positions)
+                }
+            else:
+                # Multiple motion areas - bounding box approach
+                all_x = [x for x, y, area in motion_positions]
+                all_y = [y for y, area in motion_positions]
+                
+                # Padding for motion areas (larger since they're less precise)
+                avg_area = sum(area for x, y, area in motion_positions) / len(motion_positions)
+                padding = int(np.sqrt(avg_area) * 0.4)
+                
+                min_x = min(all_x) - padding
+                max_x = max(all_x) + padding
+                min_y = min(all_y) - padding
+                max_y = max(all_y) + padding
+                
+                center_x = (min_x + max_x) // 2
+                center_y = (min_y + max_y) // 2
+                
+                confidence = min(70, 45 + len(motion_positions) * 2)
+                cap.release()
+                return {
+                    'x': int(center_x), 'y': int(center_y), 
+                    'confidence': confidence, 
+                    'method': 'motion_detection_multi',
+                    'detections': len(motion_positions),
+                    'bounding_box': {'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y}
+                }
         
         # Method 3: Person/Body Detection
         st.info("🔍 No motion found, trying body detection...")
@@ -622,17 +674,43 @@ def detect_subject_position(video_path, sample_frames=30):
                     body_positions.append((center_x, center_y, w * h))
             
             if body_positions:
-                total_area = sum(area for x, y, area in body_positions)
-                avg_x = sum(x * area for x, y, area in body_positions) / total_area
-                avg_y = sum(y * area for x, y, area in body_positions) / total_area
-                confidence = min(70, 30 + len(body_positions) * 4)
-                cap.release()
-                return {
-                    'x': int(avg_x), 'y': int(avg_y), 
-                    'confidence': confidence, 
-                    'method': 'body_detection',
-                    'detections': len(body_positions)
-                }
+                if len(body_positions) == 1:
+                    # Single body
+                    x, y, area = body_positions[0]
+                    confidence = 65
+                    cap.release()
+                    return {
+                        'x': int(x), 'y': int(y), 
+                        'confidence': confidence, 
+                        'method': 'body_detection_single',
+                        'detections': len(body_positions)
+                    }
+                else:
+                    # Multiple bodies - bounding box approach
+                    all_x = [x for x, y, area in body_positions]
+                    all_y = [y for y, area in body_positions]
+                    
+                    # Padding for body areas
+                    avg_area = sum(area for x, y, area in body_positions) / len(body_positions)
+                    padding = int(np.sqrt(avg_area) * 0.2)
+                    
+                    min_x = min(all_x) - padding
+                    max_x = max(all_x) + padding
+                    min_y = min(all_y) - padding
+                    max_y = max(all_y) + padding
+                    
+                    center_x = (min_x + max_x) // 2
+                    center_y = (min_y + max_y) // 2
+                    
+                    confidence = min(60, 35 + len(body_positions) * 3)
+                    cap.release()
+                    return {
+                        'x': int(center_x), 'y': int(center_y), 
+                        'confidence': confidence, 
+                        'method': 'body_detection_multi',
+                        'detections': len(body_positions),
+                        'bounding_box': {'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y}
+                    }
         except:
             pass  # Body cascade might not be available
         
@@ -663,13 +741,18 @@ def get_optimal_crop_region(video_path, width, height, fine_tune_offset=0):
         subject_data = detect_subject_position(video_path)
         
         if subject_data and subject_data['confidence'] > 30:
-            # Subject detected - center crop around it
+            # Subject detected - handle single vs multiple subjects differently
             center_x = subject_data['x'] + fine_tune_offset
             center_y = subject_data['y']
             
             # Display detection results
-            st.success(f"✅ Subject detected ({subject_data['confidence']}% confidence)")
-            st.info(f"🎯 Method: {subject_data['method']} - {subject_data['detections']} detections")
+            if 'multi' in subject_data['method']:
+                st.success(f"✅ Multiple subjects detected ({subject_data['confidence']}% confidence)")
+                st.info(f"🎯 Method: {subject_data['method']} - {subject_data['detections']} subjects")
+                st.info("📏 Using bounding box to include all speakers")
+            else:
+                st.success(f"✅ Subject detected ({subject_data['confidence']}% confidence)")
+                st.info(f"🎯 Method: {subject_data['method']} - {subject_data['detections']} detection")
             
             # Calculate crop dimensions
             if current_aspect > target_aspect:
@@ -677,7 +760,19 @@ def get_optimal_crop_region(video_path, width, height, fine_tune_offset=0):
                 crop_height = original_height
                 crop_width = int(crop_height * target_aspect)
                 
-                # Center crop around detected subject
+                # For multiple subjects, ensure crop includes bounding box
+                if 'bounding_box' in subject_data:
+                    bbox = subject_data['bounding_box']
+                    bbox_width = bbox['max_x'] - bbox['min_x']
+                    bbox_center_x = (bbox['min_x'] + bbox['max_x']) // 2
+                    
+                    # If bounding box is wider than crop, adjust center and potentially zoom out
+                    if bbox_width > crop_width * 0.8:  # If bbox takes >80% of crop width
+                        # Center on bounding box center instead of calculated center
+                        center_x = bbox_center_x
+                        st.info(f"🔍 Adjusted crop to fit {bbox_width}px wide subject area")
+                
+                # Center crop around detected subject(s)
                 crop_x = int(center_x - crop_width // 2)
                 crop_x = max(0, min(crop_x, original_width - crop_width))
                 crop_y = 0
@@ -686,7 +781,18 @@ def get_optimal_crop_region(video_path, width, height, fine_tune_offset=0):
                 crop_width = original_width
                 crop_height = int(crop_width / target_aspect)
                 
-                # Center crop around detected subject
+                # For multiple subjects, ensure crop includes bounding box
+                if 'bounding_box' in subject_data:
+                    bbox = subject_data['bounding_box']
+                    bbox_height = bbox['max_y'] - bbox['min_y']
+                    bbox_center_y = (bbox['min_y'] + bbox['max_y']) // 2
+                    
+                    # If bounding box is taller than crop, adjust center
+                    if bbox_height > crop_height * 0.8:  # If bbox takes >80% of crop height
+                        center_y = bbox_center_y
+                        st.info(f"🔍 Adjusted crop to fit {bbox_height}px tall subject area")
+                
+                # Center crop around detected subject(s)
                 crop_x = 0
                 crop_y = int(center_y - crop_height // 2)
                 crop_y = max(0, min(crop_y, original_height - crop_height))
@@ -1304,8 +1410,20 @@ def preview_auto_crop_with_rectangle(video_path):
                 subj_y = crop_region['subject_position']['y']
                 cv2.circle(frame_with_rect, (subj_x, subj_y), 10, (0, 255, 255), -1)  # Yellow dot
             
-            st.success(f"✅ Subject detected ({int(crop_region['confidence_score']*100)}% confidence)")
-            st.info(f"🔍 Method: {crop_region['method']}")
+            # Draw bounding box for multiple subjects
+            if 'bounding_box' in crop_region:
+                bbox = crop_region['bounding_box']
+                cv2.rectangle(frame_with_rect, 
+                            (int(bbox['min_x']), int(bbox['min_y'])), 
+                            (int(bbox['max_x']), int(bbox['max_y'])), 
+                            (255, 0, 255), 2)  # Magenta box for subject bounding box
+                
+                st.success(f"✅ Multiple subjects detected ({int(crop_region['confidence_score']*100)}% confidence)")
+                st.info(f"🔍 Method: {crop_region['method']} - Bounding box approach")
+                st.info("💜 Magenta box shows subject area, 🟢 Green box shows final crop")
+            else:
+                st.success(f"✅ Subject detected ({int(crop_region['confidence_score']*100)}% confidence)")
+                st.info(f"🔍 Method: {crop_region['method']}")
         else:
             # Draw center crop rectangle in red
             target_aspect = 1080 / 1920
@@ -1334,7 +1452,11 @@ def preview_auto_crop_with_rectangle(video_path):
             # Resize frame with rectangle for display
             display_rect_frame = cv2.resize(frame_with_rect, (400, int(400 * original_height / original_width)))
             display_rect_rgb = cv2.cvtColor(display_rect_frame, cv2.COLOR_BGR2RGB)
-            st.image(display_rect_rgb, caption="Green = Crop area, Yellow = Subject center")
+            
+            if 'bounding_box' in crop_region:
+                st.image(display_rect_rgb, caption="🟢 Green = Final crop, 💜 Magenta = All subjects area, 🟡 Yellow = Center")
+            else:
+                st.image(display_rect_rgb, caption="🟢 Green = Crop area, 🟡 Yellow = Subject center")
         
         # Show detailed info
         if crop_region:
