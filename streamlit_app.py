@@ -1520,6 +1520,11 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
     try:
         st.write(f"🎬 Creating clip {clip_index+1} with {len(moment['subtitles'])} subtitles...")
         
+        # Check if this moment contains hook data
+        if moment.get('is_hook', False) and moment.get('hook_data'):
+            hook_data = moment['hook_data']
+            st.info(f"🎣 This clip contains the viral hook! (Score: {hook_data['score']:.1f})")
+        
         # Get output dimensions based on format
         if output_format == "4K":
             width, height = 1080, 1920
@@ -2496,12 +2501,6 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                     'subtitles': clip_subs
                 })
         
-        # Hook data will be passed from moment if it's a hook clip
-        hook_data = moment.get('hook_data', None) if moment.get('is_hook', False) else None
-        
-        if hook_data:
-            st.info(f"🎣 This clip contains the viral hook! (Score: {hook_data['score']:.1f})")
-        
         st.info(f"🎯 Creating {len(moments[:max_clips])} clips...")
         
         # Create clips
@@ -2518,7 +2517,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
             
             clip = create_shorts_clip(
                 video_path, moment, background_style, visual_preset, motion_effects, 
-                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video, hook_data, add_progress_bar, hook_enhancement, add_zoom_effect
+                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video, None, add_progress_bar, hook_enhancement, add_zoom_effect
             )
             
             if clip:
