@@ -1190,6 +1190,117 @@ def find_best_hook(subtitles, duration=3):
     
     return best_hook if best_score > 5 else None  # Minimum threshold
 
+def find_top_viral_candidates(subtitles, num_candidates=20):
+    """Find top viral candidates from entire podcast"""
+    
+    all_candidates = []
+    
+    # Scan entire podcast in 30-second windows
+    for i in range(0, len(subtitles) - 10):
+        # Get 30 seconds worth of subtitles
+        window_start = subtitles[i]['start']
+        window_subs = []
+        
+        for sub in subtitles[i:]:
+            if sub['start'] - window_start <= 30:
+                window_subs.append(sub)
+            else:
+                break
+        
+        if len(window_subs) < 5:  # Too short
+            continue
+            
+        # Calculate viral score
+        score = calculate_comprehensive_viral_score(window_subs)
+        
+        if score['total'] > 50:  # Minimum threshold
+            all_candidates.append({
+                'start_time': window_start,
+                'end_time': window_start + 30,
+                'subtitles': window_subs,
+                'score': score['total'],
+                'score_breakdown': score,
+                'preview_text': ' '.join([s['text'] for s in window_subs[:5]]),
+                'viral_question': generate_viral_question(window_subs)
+            })
+    
+    # Sort by score and return top candidates
+    all_candidates.sort(key=lambda x: x['score'], reverse=True)
+    return all_candidates[:num_candidates]
+
+def calculate_comprehensive_viral_score(subtitles):
+    """Calculate detailed viral score with multiple factors"""
+    
+    text = ' '.join([s['text'] for s in subtitles])
+    scores = {
+        'numbers': 0,
+        'emotion': 0,
+        'story': 0,
+        'surprise': 0,
+        'specificity': 0
+    }
+    
+    # 1. Big numbers or money
+    big_numbers = re.findall(r'\$\d+[KMB]?|\d+\s*(?:million|billion|thousand)', text)
+    scores['numbers'] = len(big_numbers) * 15
+    
+    # 2. Emotional intensity
+    scores['emotion'] = (
+        text.count('!') * 5 +
+        text.count('?') * 3 +
+        len([w for w in text.split() if w.isupper() and len(w) > 2]) * 4
+    )
+    
+    # 3. Story indicators
+    story_words = ['then', 'suddenly', 'turned out', 'realized', 'discovered']
+    scores['story'] = sum(10 for word in story_words if word in text.lower())
+    
+    # 4. Surprise/twist elements
+    surprise_words = ['but', 'however', 'actually', 'truth', 'never expected']
+    scores['surprise'] = sum(8 for word in surprise_words if word in text.lower())
+    
+    # 5. Specific names/brands (not generic)
+    proper_nouns = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', text)
+    scores['specificity'] = min(len(proper_nouns) * 5, 25)
+    
+    scores['total'] = sum(scores.values())
+    return scores
+
+def generate_viral_question(subtitles):
+    """Generate engaging question based on content"""
+    
+    text = ' '.join([s['text'] for s in subtitles])
+    
+    # Extract key elements
+    numbers = re.findall(r'\$?\d+[KMB]?', text)
+    names = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', text)
+    
+    # Look for key patterns and generate appropriate question
+    if 'million' in text or 'billion' in text:
+        amount = numbers[0] if numbers else "millions"
+        return f"How did this lead to {amount}? 💰"
+    
+    elif 'never' in text and 'expected' in text:
+        return "What nobody saw coming... 😱"
+    
+    elif 'mistake' in text.lower():
+        return "The mistake that changed everything 🤯"
+    
+    elif 'met' in text and names:
+        return f"When {names[0]} changed the game 🎯"
+    
+    elif '?' in text:
+        # Extract the most interesting question from the content
+        questions = re.findall(r'[^.!?]*\?', text)
+        if questions:
+            return questions[0].strip()
+    
+    # Default engaging questions
+    elif 'how' in text.lower():
+        return "Here's how it really works... 🔍"
+    else:
+        return "Why this matters to you 👇"
+
 def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
     """Find potential viral moments in subtitles"""
     viral_patterns = [
@@ -1637,7 +1748,7 @@ def get_system_font():
     else:  # Linux and others
         return "Sans"  # Generic sans-serif
 
-def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, youtube_shorts_mode=False, ultra_simple_video=False, hook_data=None, add_progress_bar=False, hook_enhancement="None", add_zoom_effect=False):
+def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, youtube_shorts_mode=False, ultra_simple_video=False, hook_data=None, add_progress_bar=False, hook_enhancement="None", add_zoom_effect=False, add_viral_question=True, question_duration=3, question_style="Bold with background"):
     """Create a shorts clip with proper 9:16 format and working subtitles"""
     try:
         st.write(f"🎬 Creating clip {clip_index+1} with {len(moment['subtitles'])} subtitles...")
@@ -1974,6 +2085,45 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                 f.write(filter_complex)
             st.info(f"💾 Filter debug file saved: {os.path.basename(filter_debug_file)}")
         
+        # Add viral question overlay for first few seconds
+        if add_viral_question and 'viral_question' in moment:
+            question = moment['viral_question']
+            
+            # Style settings based on question_style
+            if question_style == "Bold with background":
+                fontsize = int(height * 0.09)
+                fontcolor = "white"
+                borderw = 3
+                bordercolor = "black"
+                box = 1
+                boxcolor = "black@0.7"
+                boxborderw = 10
+            elif question_style == "Clean minimal":
+                fontsize = int(height * 0.07)
+                fontcolor = "white"
+                borderw = 2
+                bordercolor = "black"
+                box = 0
+                boxcolor = "transparent"
+                boxborderw = 0
+            else:  # Attention-grabbing
+                fontsize = int(height * 0.11)
+                fontcolor = "#FFD700"  # Bright yellow
+                borderw = 4
+                bordercolor = "red"
+                box = 1
+                boxcolor = "red@0.8"
+                boxborderw = 12
+            
+            # Create question overlay filter
+            question_filter = f"""drawtext=text='{escape_text_for_ffmpeg(question)}':fontsize={fontsize}:fontcolor={fontcolor}:borderw={borderw}:bordercolor={bordercolor}:box={box}:boxcolor={boxcolor}:boxborderw={boxborderw}:x=(w-text_w)/2:y={int(height * 0.15)}:enable='between(t,0,{question_duration})'"""
+            
+            # Add to filter complex
+            filter_complex += f";[{base_label}]{question_filter}[with_question]"
+            base_label = "with_question"
+            
+            st.info(f"🎯 Added viral question: '{question[:50]}...'")
+        
         # Final format
         filter_complex += f";[{base_label}]format=yuv420p[out]"
         
@@ -2176,10 +2326,29 @@ if 'current_settings' not in st.session_state:
     st.session_state.current_settings = {}
 if 'smart_crop_region' not in st.session_state:
     st.session_state.smart_crop_region = None
+if 'candidates' not in st.session_state:
+    st.session_state.candidates = []
+if 'show_selection' not in st.session_state:
+    st.session_state.show_selection = False
+if 'selected_moments' not in st.session_state:
+    st.session_state.selected_moments = []
+if 'start_processing' not in st.session_state:
+    st.session_state.start_processing = False
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - VIRAL OPTIMIZED")
-st.write("✅ **Smart cropping + Viral hooks + Sequential subtitles + No double captions**")
+st.title("🎬 YouTube Shorts Generator - VIRAL SELECTION")
+st.write("✅ **Top 20 viral candidates + Manual selection + Viral questions + Multi-speaker detection**")
+
+# New workflow info
+st.info("""
+🎯 **NEW WORKFLOW:**
+1. **Enter YouTube URL** → Download video & subtitles
+2. **Click "Find Viral Moments"** → Get top 20 candidates with scores
+3. **Review & Select** → Choose which clips to create (with previews & viral questions)
+4. **Click "Create Selected Clips"** → Only creates the clips you want!
+
+**Benefits:** No wasted processing time, better clip quality, viral questions for engagement!
+""")
 
 # IMPORTANT WARNING
 st.error("""
@@ -2315,6 +2484,32 @@ ultra_simple_video = st.sidebar.checkbox(
     "Ultra-simple video processing",
     value=False,
     help="Use most basic video processing (enable if getting filter errors even with subtitles off)"
+)
+
+# Viral Detection Settings
+st.sidebar.subheader("🎯 Viral Detection Settings")
+
+num_candidates = st.sidebar.slider(
+    "Number of candidates to find",
+    10, 50, 20,
+    help="More candidates = more choices but longer processing"
+)
+
+min_score_threshold = st.sidebar.slider(
+    "Minimum score threshold",
+    30, 100, 50,
+    help="Higher = fewer but better candidates"
+)
+
+st.sidebar.subheader("📱 Question Overlay")
+question_duration = st.sidebar.slider(
+    "Question display time (seconds)",
+    2, 5, 3
+)
+
+question_style = st.sidebar.selectbox(
+    "Question style",
+    ["Bold with background", "Clean minimal", "Attention-grabbing"]
 )
 
 # Clip Duration
@@ -2595,35 +2790,109 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                 hook_moment = None
                 st.session_state.detected_hook = None
             
-            # Find regular viral moments
-            moments = find_viral_moments(subtitles, clip_duration, clip_duration)
+            # Find viral candidates
+            if st.button("🎯 Find Viral Moments", type="primary"):
+                with st.spinner("🔍 Analyzing entire podcast for viral moments..."):
+                    candidates = find_top_viral_candidates(subtitles, num_candidates=num_candidates)
+                    # Filter by minimum score threshold
+                    candidates = [c for c in candidates if c['score'] >= min_score_threshold]
+                
+                if candidates:
+                    st.success(f"✅ Found {len(candidates)} viral candidates!")
+                    st.session_state.candidates = candidates
+                    st.session_state.show_selection = True
+                else:
+                    st.error("No viral moments found. Try lowering the score threshold.")
             
-            # If we found a hook, insert it as the first moment
-            if hook_moment:
-                # Remove any overlapping moments
-                moments = [m for m in moments if not (
-                    m['start_time'] < hook_moment['end_time'] and 
-                    m['end_time'] > hook_moment['start_time']
-                )]
-                moments.insert(0, hook_moment)
-        
-        if not moments:
-            st.warning("Creating clips from beginning...")
-            moments = []
-            for i in range(min(max_clips, int(duration // clip_duration))):
-                start = i * clip_duration
-                end = min(start + clip_duration, duration)
-                clip_subs = [s for s in subtitles if s['start'] >= start and s['end'] <= end]
-                moments.append({
-                    'start_time': start,
-                    'end_time': end,
-                    'duration': end - start,
-                    'score': 1,
-                    'trigger_text': f'Clip {i+1}',
-                    'subtitles': clip_subs
-                })
-        
-        st.info(f"🎯 Creating {len(moments[:max_clips])} clips...")
+            # Show selection interface
+            if st.session_state.get('show_selection', False) and st.session_state.get('candidates'):
+                st.markdown("---")
+                st.subheader("📱 Select Clips to Create")
+                st.caption("Review each candidate and check the ones you want to create")
+                
+                selected_indices = []
+                
+                for i, candidate in enumerate(st.session_state.candidates):
+                    # Create expandable section for each candidate
+                    with st.expander(f"**Candidate {i+1}: {candidate['viral_question']}** (Score: {candidate['score']})"):
+                        # Show score breakdown
+                        scores = candidate['score_breakdown']
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Numbers/Money", scores['numbers'])
+                            st.metric("Emotion", scores['emotion'])
+                        with col2:
+                            st.metric("Story", scores['story'])
+                            st.metric("Surprise", scores['surprise'])
+                        with col3:
+                            st.metric("Specificity", scores['specificity'])
+                            st.metric("**TOTAL**", scores['total'])
+                        
+                        # Show preview text
+                        st.write("**Preview:**")
+                        st.info(f'"{candidate["preview_text"][:300]}..."')
+                        
+                        # Show timing
+                        st.write(f"**Timing:** {candidate['start_time']:.1f}s - {candidate['end_time']:.1f}s")
+                        
+                        # Selection checkbox
+                        if st.checkbox(f"✅ Create this clip", key=f"select_{i}"):
+                            selected_indices.append(i)
+                
+                # Create selected clips button
+                if selected_indices:
+                    st.markdown("---")
+                    st.success(f"📍 {len(selected_indices)} clips selected")
+                    
+                    if st.button(f"🎬 Create {len(selected_indices)} Selected Clips", type="primary"):
+                        selected_moments = [st.session_state.candidates[i] for i in selected_indices]
+                        st.session_state.selected_moments = selected_moments
+                        st.session_state.start_processing = True
+                else:
+                    st.warning("⚠️ No clips selected. Check the boxes next to clips you want to create.")
+                
+                # Reset button
+                if st.button("🔄 Start Over - Find New Viral Moments"):
+                    st.session_state.show_selection = False
+                    st.session_state.candidates = []
+                    st.session_state.selected_moments = []
+                    st.session_state.start_processing = False
+                    st.rerun()
+            
+            # Process selected clips
+            if st.session_state.get('start_processing', False) and st.session_state.get('selected_moments'):
+                moments = st.session_state.selected_moments
+                st.info(f"🎬 Creating {len(moments)} selected clips...")
+            else:
+                # Fallback to old system if no candidates selected
+                moments = find_viral_moments(subtitles, clip_duration, clip_duration)
+                
+                # If we found a hook, insert it as the first moment
+                if hook_moment:
+                    # Remove any overlapping moments
+                    moments = [m for m in moments if not (
+                        m['start_time'] < hook_moment['end_time'] and 
+                        m['end_time'] > hook_moment['start_time']
+                    )]
+                    moments.insert(0, hook_moment)
+                
+                if not moments:
+                    st.warning("Creating clips from beginning...")
+                    moments = []
+                    for i in range(min(max_clips, int(duration // clip_duration))):
+                        start = i * clip_duration
+                        end = min(start + clip_duration, duration)
+                        clip_subs = [s for s in subtitles if s['start'] >= start and s['end'] <= end]
+                        moments.append({
+                            'start_time': start,
+                            'end_time': end,
+                            'duration': end - start,
+                            'score': 1,
+                            'trigger_text': f'Clip {i+1}',
+                            'subtitles': clip_subs
+                        })
+                
+                st.info(f"🎯 Creating {len(moments[:max_clips])} clips...")
         
         # Create clips
         progress_bar = st.progress(0)
@@ -2639,7 +2908,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
             
             clip = create_shorts_clip(
                 video_path, moment, background_style, visual_preset, motion_effects, 
-                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video, None, add_progress_bar, hook_enhancement, add_zoom_effect
+                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video, None, add_progress_bar, hook_enhancement, add_zoom_effect, True, question_duration, question_style
             )
             
             if clip:
@@ -2654,10 +2923,17 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
             st.success(f"🎉 Created {len(clips)} clips successfully!")
             st.info("📋 **Clips saved!** You can now download them. The download buttons will persist even after page interactions.")
             
+            # Reset selection state after successful processing
+            st.session_state.start_processing = False
+            st.session_state.show_selection = False
+            st.session_state.selected_moments = []
+            
             # Trigger a rerun to show the persistent download section
             st.rerun()
         else:
             st.error("❌ No clips were created successfully")
+            # Reset processing state on failure
+            st.session_state.start_processing = False
 
 # Tips
 with st.expander("💡 Tips & Features"):
