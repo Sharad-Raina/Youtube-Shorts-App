@@ -511,121 +511,165 @@ def detect_faces_in_frame(frame):
             faces.append((subject['x'], subject['y'], subject['w'], subject['h']))
     return faces
 
-def get_optimal_crop_region(video_path, width, height, sample_frames=10):
-    """Analyze video to find optimal crop region that includes speakers"""
+def detect_subject_position(video_path, sample_frames=30):
+    """Smart multi-method subject detection with confidence scoring"""
     try:
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Check for valid dimensions
-        if original_width == 0 or original_height == 0 or height == 0:
+        if total_frames == 0 or original_width == 0 or original_height == 0:
             cap.release()
             return None
         
-        # Calculate target aspect ratio
-        target_aspect = width / height  # 9:16 = 0.5625
-        current_aspect = original_width / original_height
-        
-        # Check if we have frames to sample
-        if total_frames == 0:
-            cap.release()
-            return None
-        
-        # Sample frames throughout the video (30 frames for better coverage)
-        sample_frames = 30
+        # Sample 30 frames throughout video
         frame_indices = np.linspace(0, total_frames - 1, sample_frames, dtype=int)
         
-        all_subject_centers = []
-        subject_stats = {'face': 0, 'profile': 0, 'body': 0, 'object': 0, 'motion': 0}
-        frame_subjects = []  # Store subjects per frame for analysis
+        # Method 1: Face Detection (highest priority)
+        face_positions = []
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         
         for idx in frame_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = cap.read()
             if not ret:
                 continue
-            
-            subjects = detect_subjects_in_frame(frame)
-            frame_subjects.append(subjects)
-            
-            # Calculate subject centers with weighted importance
-            for subject in subjects:
-                center_x, center_y = subject['center']
-                confidence = subject['confidence']
-                subject_type = subject['type']
                 
-                # Weight centers by confidence and subject type
-                weighted_center = (center_x, center_y, confidence, subject_type)
-                all_subject_centers.append(weighted_center)
-                subject_stats[subject_type] += 1
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4, minSize=(30, 30))
+            
+            for (x, y, w, h) in faces:
+                center_x = x + w // 2
+                center_y = y + h // 2
+                face_positions.append((center_x, center_y, w * h))  # Include area for weighting
         
-        # If no subjects found with standard detection, try motion-based detection
-        if not all_subject_centers:
-            st.info("🔍 No subjects detected with standard methods, trying motion detection...")
+        if face_positions:
+            # Calculate weighted average position
+            total_area = sum(area for x, y, area in face_positions)
+            avg_x = sum(x * area for x, y, area in face_positions) / total_area
+            avg_y = sum(y * area for x, y, area in face_positions) / total_area
+            confidence = min(95, 60 + len(face_positions) * 5)  # Higher confidence for more faces
+            cap.release()
+            return {
+                'x': int(avg_x), 'y': int(avg_y), 
+                'confidence': confidence, 
+                'method': 'face_detection',
+                'detections': len(face_positions)
+            }
+        
+        # Method 2: Motion Detection
+        st.info("🔍 No faces found, trying motion detection...")
+        motion_positions = []
+        prev_frame = None
+        
+        for idx in frame_indices[::3]:  # Sample every 3rd frame for motion
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+                
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # Sample fewer frames for motion detection (computationally expensive)
-            motion_frame_indices = np.linspace(0, total_frames - 1, 10, dtype=int)
-            prev_frame = None
+            if prev_frame is not None:
+                diff = cv2.absdiff(prev_frame, gray)
+                _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+                
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    if area > 3000:  # Significant movement
+                        x, y, w, h = cv2.boundingRect(contour)
+                        center_x = x + w // 2
+                        center_y = y + h // 2
+                        motion_positions.append((center_x, center_y, area))
             
-            for idx in motion_frame_indices:
+            prev_frame = gray
+        
+        if motion_positions:
+            # Calculate weighted average
+            total_area = sum(area for x, y, area in motion_positions)
+            avg_x = sum(x * area for x, y, area in motion_positions) / total_area
+            avg_y = sum(y * area for x, y, area in motion_positions) / total_area
+            confidence = min(80, 40 + len(motion_positions) * 3)
+            cap.release()
+            return {
+                'x': int(avg_x), 'y': int(avg_y), 
+                'confidence': confidence, 
+                'method': 'motion_detection',
+                'detections': len(motion_positions)
+            }
+        
+        # Method 3: Person/Body Detection
+        st.info("🔍 No motion found, trying body detection...")
+        try:
+            body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_upperbody.xml')
+            body_positions = []
+            
+            for idx in frame_indices[::2]:  # Sample every 2nd frame
                 cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ret, frame = cap.read()
                 if not ret:
                     continue
-                
+                    
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                bodies = body_cascade.detectMultiScale(gray, 1.1, 3, minSize=(50, 50))
                 
-                if prev_frame is not None:
-                    # Calculate optical flow to detect motion
-                    flow = cv2.calcOpticalFlowPyrLK(prev_frame, gray, None, None)
-                    
-                    # Detect areas with significant motion
-                    diff = cv2.absdiff(prev_frame, gray)
-                    _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-                    
-                    # Find contours of moving areas
-                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    
-                    for contour in contours:
-                        area = cv2.contourArea(contour)
-                        if area > 5000:  # Significant movement area
-                            x, y, w, h = cv2.boundingRect(contour)
-                            center_x = x + w // 2
-                            center_y = y + h // 2
-                            
-                            all_subject_centers.append((center_x, center_y, 0.4, 'motion'))
-                            subject_stats['motion'] += 1
-                
-                prev_frame = gray
+                for (x, y, w, h) in bodies:
+                    center_x = x + w // 2
+                    center_y = y + h // 2
+                    body_positions.append((center_x, center_y, w * h))
             
-            cap.release()  # Release after motion detection
-        else:
-            cap.release()  # Release after standard detection
+            if body_positions:
+                total_area = sum(area for x, y, area in body_positions)
+                avg_x = sum(x * area for x, y, area in body_positions) / total_area
+                avg_y = sum(y * area for x, y, area in body_positions) / total_area
+                confidence = min(70, 30 + len(body_positions) * 4)
+                cap.release()
+                return {
+                    'x': int(avg_x), 'y': int(avg_y), 
+                    'confidence': confidence, 
+                    'method': 'body_detection',
+                    'detections': len(body_positions)
+                }
+        except:
+            pass  # Body cascade might not be available
         
-        # Calculate optimal crop with enhanced subject detection
-        if all_subject_centers:
-            # Calculate weighted average position of all subjects
-            total_weight = sum(confidence for x, y, confidence, s_type in all_subject_centers)
+        cap.release()
+        return None  # All methods failed
+        
+    except Exception as e:
+        if 'cap' in locals():
+            cap.release()
+        return None
+
+def get_optimal_crop_region(video_path, width, height, fine_tune_offset=0):
+    """Analyze video to find optimal crop region using smart subject detection"""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        
+        if original_width == 0 or original_height == 0 or height == 0:
+            return None
+        
+        # Calculate target aspect ratio
+        target_aspect = width / height  # 9:16 = 0.5625
+        current_aspect = original_width / original_height
+        
+        # Use new smart detection method
+        subject_data = detect_subject_position(video_path)
+        
+        if subject_data and subject_data['confidence'] > 30:
+            # Subject detected - center crop around it
+            center_x = subject_data['x'] + fine_tune_offset
+            center_y = subject_data['y']
             
-            if total_weight > 0:
-                avg_x = sum(x * confidence for x, y, confidence, s_type in all_subject_centers) / total_weight
-                avg_y = sum(y * confidence for x, y, confidence, s_type in all_subject_centers) / total_weight
-            else:
-                avg_x = sum(x for x, y, confidence, s_type in all_subject_centers) / len(all_subject_centers)
-                avg_y = sum(y for x, y, confidence, s_type in all_subject_centers) / len(all_subject_centers)
-            
-            # Provide detection feedback
-            detection_info = []
-            for s_type, count in subject_stats.items():
-                if count > 0:
-                    detection_info.append(f"{count} {s_type}(s)")
-            detection_summary = ", ".join(detection_info) if detection_info else "subjects"
-            
-            # Add centering status message
-            st.success(f"✅ Subject detected - auto-centering enabled")
-            st.info(f"🎯 Found: {detection_summary} (confidence: {total_weight/len(all_subject_centers):.2f})")
+            # Display detection results
+            st.success(f"✅ Subject detected ({subject_data['confidence']}% confidence)")
+            st.info(f"🎯 Method: {subject_data['method']} - {subject_data['detections']} detections")
             
             # Calculate crop dimensions
             if current_aspect > target_aspect:
@@ -633,8 +677,8 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 crop_height = original_height
                 crop_width = int(crop_height * target_aspect)
                 
-                # Center crop around average face position
-                crop_x = int(avg_x - crop_width // 2)
+                # Center crop around detected subject
+                crop_x = int(center_x - crop_width // 2)
                 crop_x = max(0, min(crop_x, original_width - crop_width))
                 crop_y = 0
             else:
@@ -642,9 +686,9 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 crop_width = original_width
                 crop_height = int(crop_width / target_aspect)
                 
-                # Center crop around average face position
+                # Center crop around detected subject
                 crop_x = 0
-                crop_y = int(avg_y - crop_height // 2)
+                crop_y = int(center_y - crop_height // 2)
                 crop_y = max(0, min(crop_y, original_height - crop_height))
             
             return {
@@ -653,12 +697,15 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 'width': crop_width,
                 'height': crop_height,
                 'has_subjects': True,
-                'detection_summary': detection_summary,
-                'subject_stats': subject_stats,
-                'confidence_score': total_weight / len(all_subject_centers) if all_subject_centers else 0
+                'detection_summary': f"{subject_data['method']} - {subject_data['detections']} detections",
+                'confidence_score': subject_data['confidence'] / 100,
+                'method': subject_data['method'],
+                'subject_position': {'x': center_x, 'y': center_y}
             }
         else:
-            # No faces detected - use center crop
+            # No subjects detected - use center crop
+            st.info("ℹ️ No subjects detected - using center crop")
+            
             if current_aspect > target_aspect:
                 crop_height = original_height
                 crop_width = int(crop_height * target_aspect)
@@ -677,8 +724,9 @@ def get_optimal_crop_region(video_path, width, height, sample_frames=10):
                 'height': crop_height,
                 'has_subjects': False,
                 'detection_summary': "No subjects detected - using center crop",
-                'subject_stats': {'face': 0, 'profile': 0, 'body': 0, 'object': 0},
-                'confidence_score': 0
+                'confidence_score': 0,
+                'method': 'center_crop',
+                'subject_position': None
             }
     except Exception as e:
         st.warning(f"⚠️ Could not analyze video for smart cropping: {e}")
@@ -931,6 +979,111 @@ def detect_viral_hook(subtitles, duration=3):
         'type': 'detected'
     }
 
+def find_best_hook(subtitles, duration=3):
+    """Advanced viral hook detection scanning all 3-second windows"""
+    if not subtitles:
+        return None
+    
+    # Viral patterns with scores
+    viral_patterns = [
+        # High impact phrases (score 10)
+        (r'\byou won\'t believe\b', 10),
+        (r'\bwait until\b', 10),
+        (r'\bstop everything\b', 10),
+        (r'\blook at this\b', 8),
+        (r'\bthis will\b', 8),
+        
+        # Questions (score 8)
+        (r'\bwhat if\b', 8),
+        (r'\bdid you know\b', 8),
+        (r'\bhave you ever\b', 7),
+        (r'\bcan you believe\b', 7),
+        
+        # Numbers and stats (score 6)
+        (r'\$\d+', 6),  # Dollar amounts
+        (r'\b\d+%\b', 6),  # Percentages
+        (r'\bmillion\b', 6),
+        (r'\bbillion\b', 6),
+        (r'\bthousand\b', 5),
+        
+        # Emotional triggers (score 5)
+        (r'\bshocking\b', 5),
+        (r'\bincredible\b', 5),
+        (r'\bunbelievable\b', 5),
+        (r'\binsane\b', 5),
+        (r'\bcrazy\b', 4),
+        
+        # Action words (score 4)
+        (r'\bwatch\b', 4),
+        (r'\bsee\b', 3),
+        (r'\blisten\b', 4),
+        (r'\bcheck\b', 3),
+    ]
+    
+    # Get total video duration from last subtitle
+    total_duration = subtitles[-1]['end'] if subtitles else 30
+    
+    # Scan all possible 3-second windows
+    best_hook = None
+    best_score = 0
+    
+    # Create 3-second windows every 0.5 seconds
+    window_starts = np.arange(0, max(10, total_duration - duration), 0.5)  # Only scan first 10 seconds for hooks
+    
+    for start_time in window_starts:
+        end_time = start_time + duration
+        
+        # Find all subtitles that overlap with this window
+        window_subtitles = []
+        window_text = ""
+        
+        for subtitle in subtitles:
+            if subtitle['start'] < end_time and subtitle['end'] > start_time:
+                window_subtitles.append(subtitle)
+                window_text += " " + subtitle['text'].lower()
+        
+        if not window_text.strip():
+            continue
+        
+        # Score this window
+        score = 0
+        matched_patterns = []
+        
+        for pattern, pattern_score in viral_patterns:
+            matches = len(re.findall(pattern, window_text, re.IGNORECASE))
+            if matches > 0:
+                score += pattern_score * matches
+                matched_patterns.append(pattern)
+        
+        # Bonus scoring
+        # Multiple punctuation marks
+        exclamations = len(re.findall(r'[!]{2,}', window_text))
+        questions = len(re.findall(r'[?]{2,}', window_text))
+        score += (exclamations + questions) * 3
+        
+        # Boost early content (first 5 seconds get bonus)
+        if start_time < 5:
+            score *= 1.5
+        
+        # Boost if ALL CAPS words
+        caps_words = len([w for w in window_text.split() if w.isupper() and len(w) > 2])
+        score += caps_words * 2
+        
+        # Track best hook
+        if score > best_score:
+            best_score = score
+            best_hook = {
+                'start_time': start_time,
+                'end_time': end_time,
+                'duration': duration,
+                'score': score,
+                'text': window_text.strip()[:100] + "..." if len(window_text.strip()) > 100 else window_text.strip(),
+                'subtitles': window_subtitles,
+                'patterns': matched_patterns
+            }
+    
+    return best_hook if best_score > 5 else None  # Minimum threshold
+
 def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
     """Find potential viral moments in subtitles"""
     viral_patterns = [
@@ -1113,6 +1266,87 @@ def create_word_by_word_subtitles(clip_subtitles, width, height, ascii_only=True
     
     return word_subtitles
 
+def preview_auto_crop_with_rectangle(video_path):
+    """Preview auto-crop with green rectangle overlay"""
+    try:
+        st.write("🎯 **Auto-Crop Preview with Detection Rectangle**")
+        
+        # Get sample frame from middle of video
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        middle_frame = total_frames // 2
+        
+        cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame)
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret:
+            st.error("❌ Could not read video frame for preview")
+            return
+        
+        # Test subject detection
+        with st.spinner("🔍 Analyzing for subjects..."):
+            crop_region = get_optimal_crop_region(video_path, 1080, 1920)
+        
+        # Create preview with green rectangle
+        frame_with_rect = frame.copy()
+        
+        if crop_region and crop_region['has_subjects']:
+            # Draw green rectangle around crop area
+            x, y, w, h = crop_region['x'], crop_region['y'], crop_region['width'], crop_region['height']
+            cv2.rectangle(frame_with_rect, (x, y), (x + w, y + h), (0, 255, 0), 4)
+            
+            # Draw subject detection point if available
+            if crop_region.get('subject_position'):
+                subj_x = crop_region['subject_position']['x']
+                subj_y = crop_region['subject_position']['y']
+                cv2.circle(frame_with_rect, (subj_x, subj_y), 10, (0, 255, 255), -1)  # Yellow dot
+            
+            st.success(f"✅ Subject detected ({int(crop_region['confidence_score']*100)}% confidence)")
+            st.info(f"🔍 Method: {crop_region['method']}")
+        else:
+            # Draw center crop rectangle in red
+            target_aspect = 1080 / 1920
+            if original_width / original_height > target_aspect:
+                center_w = int(original_height * target_aspect)
+                center_x = (original_width - center_w) // 2
+                cv2.rectangle(frame_with_rect, (center_x, 0), (center_x + center_w, original_height), (0, 0, 255), 4)
+            else:
+                center_h = int(original_width / target_aspect)
+                center_y = (original_height - center_h) // 2
+                cv2.rectangle(frame_with_rect, (0, center_y), (original_width, center_y + center_h), (0, 0, 255), 4)
+            
+            st.warning("⚠️ No subjects detected - showing center crop")
+        
+        # Display preview
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Original Frame:**")
+            display_frame = cv2.resize(frame, (400, int(400 * original_height / original_width)))
+            display_frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            st.image(display_frame_rgb, caption="Original video frame")
+        
+        with col2:
+            st.write("**Crop Preview:**")
+            # Resize frame with rectangle for display
+            display_rect_frame = cv2.resize(frame_with_rect, (400, int(400 * original_height / original_width)))
+            display_rect_rgb = cv2.cvtColor(display_rect_frame, cv2.COLOR_BGR2RGB)
+            st.image(display_rect_rgb, caption="Green = Crop area, Yellow = Subject center")
+        
+        # Show detailed info
+        if crop_region:
+            st.write("**Crop Details:**")
+            st.write(f"• Method: {crop_region.get('method', 'unknown')}")
+            st.write(f"• Confidence: {int(crop_region['confidence_score']*100)}%")
+            st.write(f"• Crop region: {crop_region['width']}x{crop_region['height']} at ({crop_region['x']}, {crop_region['y']})")
+            st.write(f"• Original size: {original_width}x{original_height}")
+            
+    except Exception as e:
+        st.error(f"❌ Error during auto-crop preview: {e}")
+
 def test_auto_crop_preview(video_path):
     """Test and preview auto-crop detection on the video"""
     try:
@@ -1281,7 +1515,7 @@ def get_system_font():
     else:  # Linux and others
         return "Sans"  # Generic sans-serif
 
-def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, youtube_shorts_mode=False, ultra_simple_video=False, hook_data=None, add_progress_bar=False, hook_enhancement="None"):
+def create_shorts_clip(video_path, moment, background_style, visual_preset, motion_effects, output_format, temp_dir, clip_index, smart_crop_offset=None, enable_subtitles=True, subtitle_style="box", ascii_only=True, simple_mode=False, youtube_shorts_mode=False, ultra_simple_video=False, hook_data=None, add_progress_bar=False, hook_enhancement="None", add_zoom_effect=False):
     """Create a shorts clip with proper 9:16 format and working subtitles"""
     try:
         st.write(f"🎬 Creating clip {clip_index+1} with {len(moment['subtitles'])} subtitles...")
@@ -1402,18 +1636,27 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
             st.info("🔧 Falling back to ultra-simple video processing")
             filter_complex = f"[0:v]scale={width}:{height}[base]"
         
-        # Add visual presets with error handling
+        # Add visual presets and zoom effect for hooks
         base_label = "base"
         if not ultra_simple_video:
             try:
+                # Add zoom effect for viral hooks (first 3 seconds)
+                if add_zoom_effect and moment.get('is_hook', False):
+                    st.info("🎬 Adding zoom effect for viral hook")
+                    # Gradual zoom from 1.0x to 1.1x over 3 seconds
+                    zoom_filter = f"[base]zoompan=z='if(lte(t,3),1+0.033*t,1.1)':d=1:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)[zoomed]"
+                    filter_complex += ";" + zoom_filter
+                    base_label = "zoomed"
+                
+                # Apply visual presets
                 if visual_preset == 'cinematic':
-                    filter_complex += f";[base]eq=contrast=1.1:brightness=0.03:saturation=1.15[enhanced]"
+                    filter_complex += f";[{base_label}]eq=contrast=1.1:brightness=0.03:saturation=1.15[enhanced]"
                     base_label = "enhanced"
                 elif visual_preset == 'high_energy':
-                    filter_complex += f";[base]eq=contrast=1.15:saturation=1.25[enhanced]"
+                    filter_complex += f";[{base_label}]eq=contrast=1.15:saturation=1.25[enhanced]"
                     base_label = "enhanced"
                 elif visual_preset == 'platform_optimized':
-                    filter_complex += f";[base]eq=contrast=1.08:saturation=1.15[enhanced]"
+                    filter_complex += f";[{base_label}]eq=contrast=1.08:saturation=1.15[enhanced]"
                     base_label = "enhanced"
             except Exception as preset_error:
                 st.warning(f"⚠️ Visual preset error: {preset_error}")
@@ -1442,6 +1685,8 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                     
                     # Check if this subtitle is part of the viral hook
                     is_hook_text = False
+                    is_first_3_seconds = word_sub['start'] < 3.0  # First 3 seconds get special treatment
+                    
                     if contains_hook and hook_in_clip:
                         word_start = word_sub['start']
                         word_end = word_sub['end']
@@ -1455,26 +1700,26 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                     # YouTube Shorts mode: Simple, bright, centered subtitles
                     try:
                         # Enhance hook text with special formatting
-                        if is_hook_text and hook_enhancement != "None":
+                        if (is_hook_text or is_first_3_seconds) and hook_enhancement != "None":
                             if hook_enhancement == "Bold text + zoom":
-                                font_size = int(font_size * 1.4)  # 40% larger
-                                color = "yellow"  # Force yellow for hooks
+                                font_size = int(font_size * 1.5)  # 50% larger for hooks
+                                color = "#FFD700"  # Bright yellow (#FFD700)
                                 drawtext_params = [
                                     f"text='{escaped_text}'",
                                     f"fontsize={font_size}",
                                     f"fontcolor={color}",
                                     "x=(w-text_w)/2",  
-                                    f"y={y_pos - 20}",  # Slightly higher position
+                                    f"y={y_pos - 30}",  # Higher position for emphasis
                                     "box=1", 
-                                    "boxcolor=red@0.8",  # Red background for hooks
-                                    "boxborderw=12",     # Thicker border
-                                    "borderw=4",         # Bold outline
+                                    "boxcolor=red@0.9",  # Strong red background
+                                    "boxborderw=15",     # Thick border
+                                    "borderw=5",         # Bold outline
                                     "bordercolor=black",
                                     f"enable='between(t,{word_sub['start']:.2f},{word_sub['end']:.2f})'"
                                 ]
                             elif hook_enhancement == "Extra large text":
-                                font_size = int(font_size * 1.6)  # 60% larger
-                                color = "yellow"
+                                font_size = int(font_size * 1.6)  # 60% larger  
+                                color = "#FFD700"  # Bright yellow
                                 drawtext_params = [
                                     f"text='{escaped_text}'",
                                     f"fontsize={font_size}",
@@ -1489,7 +1734,7 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                             elif hook_enhancement == "Pulsing effect":
                                 # Note: FFmpeg pulsing would require complex expressions
                                 font_size = int(font_size * 1.3)  
-                                color = "yellow"
+                                color = "#FFD700"  # Bright yellow
                                 drawtext_params = [
                                     f"text='{escaped_text}'",
                                     f"fontsize={font_size}",
@@ -1992,34 +2237,53 @@ with st.expander("🔧 Advanced Options"):
     # Hook Detection Section
     st.write("**🎣 Viral Hook Detection:**")
     enable_hook_detection = st.checkbox(
-        "🎯 Enable viral hook detection",
+        "🎯 Auto-detect viral hook",
         value=True,
         help="Automatically detect and enhance the most attention-grabbing 3-second segment"
     )
     
     if enable_hook_detection:
-        add_progress_bar = st.checkbox(
-            "📊 Add progress bar to hook",
-            value=True,
-            help="Show a progress bar during the hook segment for engagement"
-        )
-        
         hook_enhancement = st.selectbox(
             "🎬 Hook enhancement style",
             ["Bold text + zoom", "Extra large text", "Pulsing effect", "None"],
             help="Visual enhancement for the detected hook"
         )
+        
+        add_zoom_effect = st.checkbox(
+            "📹 Add zoom effect to hook",
+            value=True,
+            help="Gradual zoom from 1.0x to 1.1x during first 3 seconds"
+        )
+    
+    # Display hook info if available
+    if 'detected_hook' in st.session_state and st.session_state.detected_hook:
+        hook = st.session_state.detected_hook
+        st.success(f"🎯 Found hook at: {hook['start_time']:.1f}s - '{hook['text'][:50]}...'")
+        st.info(f"📊 Hook score: {hook['score']:.1f}")
     
     st.write("**Font Testing:**")
     if st.button("🔤 Test Font Rendering"):
         test_font_rendering()
     
     st.write("**Auto-Crop Testing:**")
-    if st.button("🎯 Test Auto-Crop Preview"):
+    if st.button("🎯 Preview Auto-Crop"):
         if 'video_path' in st.session_state and st.session_state.video_path:
-            test_auto_crop_preview(st.session_state.video_path)
+            preview_auto_crop_with_rectangle(st.session_state.video_path)
         else:
             st.warning("⚠️ Please download a video first to test auto-crop")
+    
+    # Fine-tune slider (only show if confidence is low)
+    fine_tune_offset = 0
+    if ('smart_crop_region' in st.session_state and 
+        st.session_state.smart_crop_region and 
+        st.session_state.smart_crop_region.get('confidence_score', 1) < 0.7):
+        fine_tune_offset = st.slider(
+            "🎛️ Fine-tune position",
+            min_value=-30,
+            max_value=30,
+            value=0,
+            help="Adjust horizontal position if subject detection isn't perfect"
+        )
     
     st.write("**Troubleshooting:**")
     use_cookies = st.checkbox(
@@ -2056,6 +2320,8 @@ if 'add_progress_bar' not in locals():
     add_progress_bar = False
 if 'hook_enhancement' not in locals():
     hook_enhancement = "None"
+if 'add_zoom_effect' not in locals():
+    add_zoom_effect = False
 
 # Show existing clips if available
 if st.session_state.video_processed and st.session_state.clips:
@@ -2167,7 +2433,52 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                 })
         else:
             st.success(f"📊 Found {len(subtitles)} subtitle segments")
+            
+            # Detect viral hook if enabled
+            if enable_hook_detection:
+                with st.spinner("🎣 Scanning for viral hook patterns..."):
+                    detected_hook = find_best_hook(subtitles, duration=3)
+                    
+                    if detected_hook:
+                        st.success(f"🎯 **Viral hook detected!** (Score: {detected_hook['score']:.1f})")
+                        st.info(f"📍 Hook at: {detected_hook['start_time']:.1f}s - \"{detected_hook['text'][:80]}...\"")
+                        st.info(f"🔥 Patterns found: {len(detected_hook['patterns'])} viral triggers")
+                        
+                        # Store hook in session state for sidebar display
+                        st.session_state.detected_hook = detected_hook
+                        
+                        # Modify the first moment to start with the hook
+                        hook_moment = {
+                            'start_time': detected_hook['start_time'],
+                            'end_time': detected_hook['start_time'] + clip_duration,
+                            'duration': clip_duration,
+                            'score': detected_hook['score'] + 100,  # Boost score to ensure it's first
+                            'trigger_text': f"VIRAL HOOK: {detected_hook['text'][:50]}...",
+                            'subtitles': [s for s in subtitles 
+                                        if s['start'] >= detected_hook['start_time'] 
+                                        and s['end'] <= detected_hook['start_time'] + clip_duration],
+                            'is_hook': True,
+                            'hook_data': detected_hook
+                        }
+                    else:
+                        st.info("🎣 No strong viral patterns detected - using standard moment detection")
+                        hook_moment = None
+                        st.session_state.detected_hook = None
+            else:
+                hook_moment = None
+                st.session_state.detected_hook = None
+            
+            # Find regular viral moments
             moments = find_viral_moments(subtitles, clip_duration, clip_duration)
+            
+            # If we found a hook, insert it as the first moment
+            if hook_moment:
+                # Remove any overlapping moments
+                moments = [m for m in moments if not (
+                    m['start_time'] < hook_moment['end_time'] and 
+                    m['end_time'] > hook_moment['start_time']
+                )]
+                moments.insert(0, hook_moment)
         
         if not moments:
             st.warning("Creating clips from beginning...")
@@ -2185,23 +2496,11 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                     'subtitles': clip_subs
                 })
         
-        # Detect viral hook if enabled
-        hook_data = None
-        if enable_hook_detection and subtitles:
-            with st.spinner("🎣 Detecting viral hook..."):
-                hook_data = detect_viral_hook(subtitles, duration=3)
-                
-                if hook_data:
-                    if hook_data['type'] == 'detected':
-                        st.success(f"🎯 **Viral hook detected!** Score: {hook_data['score']}")
-                        st.info(f"📍 Hook text: \"{hook_data['subtitle']['text']}\"")
-                        st.info(f"⏰ Hook timing: {hook_data['start_time']:.1f}s - {hook_data['end_time']:.1f}s")
-                        if hook_data['trigger_words']:
-                            st.info(f"🔥 Trigger words detected: {len(hook_data['trigger_words'])} patterns")
-                    else:
-                        st.info("🎣 No strong hook patterns detected - using video beginning as hook")
-                else:
-                    st.warning("⚠️ Could not detect hook - proceeding without hook enhancement")
+        # Hook data will be passed from moment if it's a hook clip
+        hook_data = moment.get('hook_data', None) if moment.get('is_hook', False) else None
+        
+        if hook_data:
+            st.info(f"🎣 This clip contains the viral hook! (Score: {hook_data['score']:.1f})")
         
         st.info(f"🎯 Creating {len(moments[:max_clips])} clips...")
         
@@ -2219,7 +2518,7 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
             
             clip = create_shorts_clip(
                 video_path, moment, background_style, visual_preset, motion_effects, 
-                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video, hook_data, add_progress_bar, hook_enhancement
+                output_format, temp_dir, i, smart_crop_region, enable_subtitles, subtitle_style, ascii_only, simple_mode, youtube_shorts_mode, ultra_simple_video, hook_data, add_progress_bar, hook_enhancement, add_zoom_effect
             )
             
             if clip:
