@@ -1229,130 +1229,105 @@ def find_top_viral_candidates(subtitles, num_candidates=20):
     return all_candidates[:num_candidates]
 
 def calculate_comprehensive_viral_score(subtitles):
-    """Calculate detailed viral score with multiple factors - ENHANCED"""
+    """Calculate detailed viral score - FOCUS ON EMOTIONAL PEAKS"""
     
     text = ' '.join([s['text'] for s in subtitles])
     text_lower = text.lower()
     scores = {
-        'numbers': 0,
+        'controversy': 0,
         'emotion': 0,
-        'story': 0,
-        'surprise': 0,
-        'specificity': 0
+        'story_twist': 0,
+        'specificity': 0,
+        'shock_value': 0
     }
     
-    # 1. ENHANCED Numbers and money detection
-    money_patterns = [
-        r'\$\d+[KMB]?', r'\d+\s*(?:million|billion|thousand|dollars)',
-        r'\d+[KMB]\+?', r'\d{4,}', r'worth.*\d+', r'made.*\d+', r'earned.*\d+'
-    ]
-    numbers_found = 0
-    for pattern in money_patterns:
-        numbers_found += len(re.findall(pattern, text_lower))
-    scores['numbers'] = min(numbers_found * 20, 80)  # Cap at 80
+    # 1. CONTROVERSY SCORE (arguments, debates, disagreements)
+    controversy_words = ['disagree', 'argue', 'debate', 'wrong', 'actually', 'but', 'however', 'versus', 'against']
+    scores['controversy'] = sum(15 for word in controversy_words if word in text_lower)
     
-    # 2. ENHANCED Emotional intensity
-    emotion_words = [
-        'amazing', 'incredible', 'unbelievable', 'shocking', 'crazy', 'insane',
-        'love', 'hate', 'angry', 'excited', 'devastated', 'thrilled'
+    # 2. EMOTIONAL PEAKS (look for emotional intensity)
+    emotion_indicators = {
+        'anger': ['angry', 'furious', 'pissed', 'mad', 'rage'],
+        'shock': ['shocked', 'stunned', 'surprised', 'amazed', 'mind-blown'],
+        'fear': ['scared', 'terrified', 'afraid', 'worried', 'nervous'],
+        'joy': ['excited', 'thrilled', 'happy', 'amazing', 'incredible']
+    }
+    for emotion, words in emotion_indicators.items():
+        scores['emotion'] += sum(20 for word in words if word in text_lower)
+    
+    # 3. STORY TWISTS (moments of revelation)
+    twist_phrases = [
+        'and then', 'suddenly', 'out of nowhere', 'plot twist', 'turns out',
+        'what happened next', 'you\'ll never guess', 'the truth is',
+        'i realized', 'it hit me', 'everything changed'
     ]
-    emotion_score = (
-        text.count('!') * 5 +
-        text.count('?') * 3 +
-        len([w for w in text.split() if w.isupper() and len(w) > 2]) * 4 +
-        sum(5 for word in emotion_words if word in text_lower)
+    scores['story_twist'] = sum(25 for phrase in twist_phrases if phrase in text_lower)
+    
+    # 4. SPECIFIC DETAILS (names, numbers, places make it real)
+    has_numbers = bool(re.search(r'\b\d+\b', text))
+    has_money = bool(re.search(r'\$\d+|\d+\s*dollars?', text_lower))
+    proper_nouns = len(re.findall(r'\b[A-Z][a-z]+\b', text))
+    
+    scores['specificity'] = (
+        (30 if has_money else 0) +
+        (20 if has_numbers else 0) +
+        (min(proper_nouns * 5, 30))
     )
-    scores['emotion'] = min(emotion_score, 60)  # Cap at 60
     
-    # 3. ENHANCED Story and climax indicators
-    story_patterns = [
-        'then', 'suddenly', 'turned out', 'realized', 'discovered', 'found out',
-        'happened next', 'what happened was', 'the crazy part', 'get this',
-        'you won\'t believe', 'wait for it', 'plot twist'
+    # 5. SHOCK VALUE (cursing, extreme statements)
+    shock_patterns = [
+        r'\b(what the|holy|damn|crazy|insane|unbelievable)\b',
+        r'[!?]{2,}',  # Multiple punctuation
+        r'\b(NEVER|ALWAYS|EVERYONE|NO ONE)\b'  # Absolutes in caps
     ]
-    scores['story'] = sum(12 for word in story_patterns if word in text_lower)
-    
-    # 4. ENHANCED Surprise and twist elements
-    surprise_patterns = [
-        'but', 'however', 'actually', 'truth is', 'never expected', 'shocking',
-        'twist', 'surprise', 'didn\'t see coming', 'plot twist', 'turns out',
-        'little did', 'secret', 'hidden', 'revealed'
-    ]
-    scores['surprise'] = sum(10 for word in surprise_patterns if word in text_lower)
-    
-    # 5. ENHANCED Specificity (names, brands, places)
-    proper_nouns = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', text)
-    # Filter out common words that get capitalized
-    common_words = {'He', 'She', 'They', 'I', 'You', 'We', 'The', 'This', 'That'}
-    proper_nouns = [noun for noun in proper_nouns if noun not in common_words]
-    scores['specificity'] = min(len(proper_nouns) * 8, 40)  # Cap at 40
-    
-    # 6. BONUS: Viral keywords (new category)
-    viral_keywords = [
-        'viral', 'trending', 'famous', 'celebrity', 'rich', 'wealthy',
-        'exposed', 'truth', 'scandal', 'secret', 'hack', 'trick'
-    ]
-    bonus_score = sum(15 for word in viral_keywords if word in text_lower)
-    scores['bonus'] = min(bonus_score, 45)
+    for pattern in shock_patterns:
+        scores['shock_value'] += len(re.findall(pattern, text)) * 15
     
     scores['total'] = sum(scores.values())
     return scores
 
 def generate_viral_question(subtitles):
-    """Generate engaging question based on content - ALWAYS returns a question"""
+    """Generate engaging question based on content - ENHANCED FOR VIRALITY"""
     
     text = ' '.join([s['text'] for s in subtitles]).lower()
     
-    # Extract key elements
-    numbers = re.findall(r'\$?\d+[KMB]?|million|billion|thousand', text)
-    names = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', ' '.join([s['text'] for s in subtitles]))
+    # Extract key elements with better patterns
+    money_match = re.search(r'\$?([\d,]+)\s*(million|billion|thousand|k|m|dollars?)', text)
+    shocking_words = re.findall(r'\b(never|always|everyone|nobody|secret|hidden|mistake|wrong|failed|lost|won|gained)\b', text)
+    action_words = re.findall(r'\b(discovered|realized|found out|learned|revealed|exposed|caught|stopped)\b', text)
     
-    # Look for key patterns and generate appropriate question - OPTIMIZED FOR MULTI-LINE
-    if any(word in text for word in ['million', 'billion', 'thousand', '$']) or numbers:
-        if numbers:
-            amount = numbers[0]
-            return f"How did this make {amount}? 💰"
-        else:
-            return "How much money was made? 💰"
-    
-    elif any(word in text for word in ['never expected', 'surprised', 'shocked', 'couldn\'t believe']):
-        return "What nobody saw coming? 😱"
+    # ENHANCED QUESTION GENERATION
+    if money_match:
+        amount = money_match.group(0).upper()
+        return f"How I made {amount} doing THIS 🤯"
     
     elif any(word in text for word in ['mistake', 'wrong', 'failed', 'error']):
-        return "The mistake that changed it all 🤯"
+        return "The $1M mistake everyone makes 😱"
     
-    elif any(word in text for word in ['secret', 'hidden', 'revealed', 'truth']):
-        return "The secret nobody knows 🤫"
+    elif any(word in text for word in ['secret', 'hidden', 'nobody knows', 'truth']):
+        return "The secret they don't want you to know 🤫"
     
-    elif any(word in text for word in ['crazy', 'insane', 'unbelievable', 'amazing']):
-        return "Why this went viral 🔥"
+    elif any(word in text for word in ['changed my life', 'life changing', 'transformed']):
+        return "This changed EVERYTHING for me 🚀"
     
-    elif names and len(names) > 0:
-        return f"What {names[0]} discovered 🎯"
+    elif action_words:
+        action = action_words[0].upper()
+        return f"I {action} something INSANE... 😳"
     
-    elif any(word in text for word in ['how', 'why', 'what', 'when', 'where']):
-        return "Here's what really happened 🔍"
+    elif shocking_words:
+        shock = shocking_words[0].upper()
+        return f"{shock} thought this would work... 🤔"
     
-    elif any(word in text for word in ['love', 'hate', 'angry', 'happy', 'sad']):
-        return "The emotional truth 💔"
-    
-    elif any(word in text for word in ['business', 'company', 'startup', 'entrepreneur']):
-        return "The business secret 📊"
-    
-    elif any(word in text for word in ['life', 'changed', 'transformation']):
-        return "How this changed everything ⚡"
-    
-    # Always return SOMETHING - never fail
+    # More engaging fallbacks with proven viral hooks
     else:
-        fallback_questions = [
-            "Why this matters to you 👇",
-            "The truth revealed 🎬",
-            "What happens next ⚡",
-            "The real story 📖", 
-            "Why everyone's talking 💬"
+        engaging_questions = [
+            "Wait... WHAT just happened?! 😱",
+            "You won't believe what he said... 🤯", 
+            "This is why I quit everything 💔",
+            "The moment that broke the internet 📱",
+            "Why is nobody talking about this?! 🔥"
         ]
-        # Use the length of text to pick consistently 
-        return fallback_questions[len(text) % len(fallback_questions)]
+        return engaging_questions[len(text) % len(engaging_questions)]
 
 def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
     """Find potential viral moments in subtitles"""
@@ -1425,34 +1400,31 @@ def find_viral_moments(subtitles, min_clip_duration=15, max_clip_duration=60):
     return filtered_moments[:10]
 
 def escape_text_for_ffmpeg(text, ascii_only=True):
-    """Properly escape text for FFmpeg drawtext filter"""
+    """Properly escape text for FFmpeg drawtext filter while preserving important punctuation"""
     import re
     
     if ascii_only:
-        # Remove non-ASCII characters first
-        text = text.encode('ascii', 'ignore').decode('ascii')
+        # Remove non-ASCII but KEEP question marks and exclamation points
+        text = ''.join(char if ord(char) < 128 else '' for char in text)
     
-    # Clean up whitespace first
-    text = text.replace('\n', ' ')     # Replace newlines with spaces
-    text = text.replace('\r', ' ')     # Replace carriage returns
-    text = text.replace('\t', ' ')     # Replace tabs with spaces
-    text = ' '.join(text.split())     # Normalize whitespace
+    # Clean up whitespace
+    text = text.replace('\n', ' ')
+    text = text.replace('\r', ' ')
+    text = text.replace('\t', ' ')
+    text = ' '.join(text.split())
     
-    # Remove problematic characters first to simplify escaping
-    text = text.replace("'", "")       # Remove apostrophes entirely
-    text = text.replace('"', '')       # Remove quotes entirely
-    text = re.sub(r'[^\w\s\.,!?\-]', '', text)  # Keep only basic punctuation
+    # KEEP QUESTION MARKS AND EXCLAMATION POINTS!
+    # Only remove truly problematic characters
+    text = text.replace("'", "")       # Remove apostrophes
+    text = text.replace('"', '')       # Remove quotes
+    text = text.replace(':', '\\:')    # Escape colons
+    text = text.replace('=', '\\=')    # Escape equals
+    text = text.replace(',', '\\,')    # Escape commas
     
-    # Simple escaping for FFmpeg drawtext - only escape colons since we use it as separator
-    text = text.replace(':', ' ')      # Replace colons with spaces instead of escaping
-    text = text.replace('=', ' ')      # Replace equals with spaces
-    text = text.replace(',', ' ')      # Replace commas with spaces
+    # DO NOT remove ? or ! - these are crucial for viral questions
     
     # Final cleanup
     text = text.strip()
-    text = ' '.join(text.split())     # Normalize multiple spaces
-    
-    # If text is empty after all processing, provide a default
     if not text:
         text = "Sample Text"
     
@@ -2155,32 +2127,32 @@ def create_shorts_clip(video_path, moment, background_style, visual_preset, moti
                         break
                 question = shortened + "..." if shortened else question[:max_chars-3] + "..."
             
-            # Style settings - get boxborderw value for calculations
+            # Style settings - FIXED COLOR FORMATTING
             if question_style == "Bold with background":
                 fontcolor = "white"
-                borderw = 2
-                bordercolor = "black"
+                borderw = 3
+                bordercolor = "black" 
                 box = 1
                 boxcolor = "black@0.8"
-                boxborderw = 8
+                boxborderw = 12
             elif question_style == "Clean minimal":
                 fontcolor = "white"
                 borderw = 2
                 bordercolor = "black"
                 box = 1
                 boxcolor = "black@0.5"
-                boxborderw = 6
+                boxborderw = 8
             else:  # Attention-grabbing - DEFAULT
-                fontcolor = "#FFD700"  # Bright yellow
-                borderw = 3
+                fontcolor = "yellow"  # Use 'yellow' not '#FFD700' for FFmpeg
+                borderw = 4
                 bordercolor = "red"
                 box = 1
                 boxcolor = "red@0.8"
-                boxborderw = 10
+                boxborderw = 15
             
             # 2. DYNAMIC FONT SIZE CALCULATION WITH WIDTH VALIDATION
             escaped_question = escape_text_for_ffmpeg(question)
-            base_fontsize = int(height * 0.04)  # Start at 4% instead of 6%
+            base_fontsize = int(height * 0.055)  # 5.5% - slightly larger for viral impact
             
             # Estimate text width (rough approximation: avg char width is ~0.6 * font height)
             estimated_text_width = len(escaped_question) * base_fontsize * 0.6
@@ -2438,20 +2410,20 @@ if 'start_processing' not in st.session_state:
     st.session_state.start_processing = False
 
 # Streamlit UI
-st.title("🎬 YouTube Shorts Generator - WIDTH VALIDATION FIXED")
-st.write("✅ **Dynamic sizing + Width validation + 5% margins + Debug info + Never cut off**")
+st.title("🎬 YouTube Shorts Generator - VIRAL FORMATTING FIXED")
+st.write("✅ **Punctuation preserved + Proper colors + Viral hooks + Emotional scoring + Engaging questions**")
 
-# Width validation fix info
+# Comprehensive viral improvements info
 st.info("""
-🎯 **COMPREHENSIVE POSITIONING FIX:**
-- 📏 **Dynamic Font Size**: 4% base, auto-adjusts to text width (2.5%-5% range)
-- 📐 **Width Validation**: Calculates actual text width vs available space
-- 🎯 **Smart Margins**: 5% margins on each side, never touches edges
-- ✂️ **Aggressive Truncation**: 35 characters max with smart word breaks
-- 🐛 **Debug Output**: Shows exact calculations and positioning
-- 📱 **Foolproof Logic**: Text auto-repositions if too wide
+🎯 **COMPREHENSIVE VIRAL IMPROVEMENTS:**
+- ❓ **Punctuation Preserved**: Question marks and exclamation points now display properly
+- 🎨 **Proper Colors**: Fixed yellow color format for FFmpeg compatibility  
+- 🔥 **Viral Hook Generation**: "How I made $50K doing THIS 🤯", "Wait... WHAT just happened?!"
+- 📊 **Emotional Scoring**: Controversy, emotion peaks, story twists, shock value detection
+- 🎭 **Proven Viral Patterns**: Uses actual viral video hooks and engagement techniques
+- 📏 **Dynamic Sizing**: 5.5% font size with width validation and margins
 
-**Result:** Every question GUARANTEED to fit within frame boundaries!
+**Result:** Every question is engaging, properly formatted, and designed to go viral!
 """)
 
 # IMPORTANT WARNING
@@ -2919,20 +2891,42 @@ if st.button("🚀 Generate Shorts", type="primary", use_container_width=True):
                 for i, candidate in enumerate(st.session_state.candidates):
                     # Create expandable section for each candidate
                     with st.expander(f"**Candidate {i+1}: {candidate['viral_question']}** (Score: {candidate['score']})"):
-                        # Show score breakdown
+                        # Show score breakdown with viral indicators
                         scores = candidate['score_breakdown']
+                        
+                        # Add viral potential visualization
+                        if scores['total'] > 100:
+                            st.markdown("### 🔥🔥🔥 EXTREMELY VIRAL POTENTIAL 🔥🔥🔥")
+                        elif scores['total'] > 70:
+                            st.markdown("### 🔥🔥 HIGH VIRAL POTENTIAL 🔥🔥")
+                        else:
+                            st.markdown("### 🔥 MODERATE VIRAL POTENTIAL 🔥")
+                        
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            st.metric("Numbers/Money", scores['numbers'])
-                            st.metric("Emotion", scores['emotion'])
+                            st.metric("Controversy", scores.get('controversy', 0))
+                            st.metric("Emotion", scores.get('emotion', 0))
                         with col2:
-                            st.metric("Story", scores['story'])
-                            st.metric("Surprise", scores['surprise'])
+                            st.metric("Story Twist", scores.get('story_twist', 0))
+                            st.metric("Shock Value", scores.get('shock_value', 0))
                         with col3:
-                            st.metric("Specificity", scores['specificity'])
-                            st.metric("Viral Keywords", scores.get('bonus', 0))
+                            st.metric("Specificity", scores.get('specificity', 0))
                         
-                        st.metric("**🔥 TOTAL SCORE**", scores['total'])
+                        st.metric("**🔥 TOTAL VIRAL SCORE**", scores['total'])
+                        
+                        # Show what makes it viral
+                        viral_factors = []
+                        if scores.get('controversy', 0) > 20:
+                            viral_factors.append("⚡ Contains controversy/debate")
+                        if scores.get('emotion', 0) > 30:
+                            viral_factors.append("😱 High emotional intensity")
+                        if scores.get('story_twist', 0) > 25:
+                            viral_factors.append("🎬 Has a plot twist/revelation")
+                        if scores.get('shock_value', 0) > 20:
+                            viral_factors.append("🤯 Shocking content")
+
+                        for factor in viral_factors:
+                            st.write(factor)
                         
                         # Show preview text
                         st.write("**Preview:**")
